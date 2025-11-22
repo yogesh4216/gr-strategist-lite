@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 # -------------------------------------------------
-# PAGE SETUP (dark pit-wall style)
+# PAGE SETUP
 # -------------------------------------------------
 st.set_page_config(
     page_title="GR Strategist Lite 🏎️",
@@ -11,6 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Simple dark styling
 st.markdown(
     """
     <style>
@@ -49,11 +50,10 @@ TEMP_NOISE = 3.0
 RNG = np.random.default_rng(42)
 
 # -------------------------------------------------
-# RESET OLD INCOMPATIBLE STATE (e.g. missing fuel column)
+# RESET OLD INCOMPATIBLE STATE
 # -------------------------------------------------
 if "history" in st.session_state:
     cols = list(st.session_state["history"].columns)
-    # if we don't have fuel_percent column, wipe state and start clean
     if "fuel_percent" not in cols:
         st.session_state.clear()
 
@@ -280,12 +280,43 @@ def sector_heat(hist: pd.DataFrame):
     ]
 
 
+def aggression_level(row: pd.Series) -> float:
+    """0–100 attack score based on throttle, brake, g-forces."""
+    base = 0.5 * (row["throttle_pct"] / 100) + 0.3 * (row["brake_pct"] / 100)
+    base += 0.2 * (row["g_lat"] / 2.0)
+    return float(np.clip(base * 100, 0, 100))
+
+
+def colored_value(val, low_ok=True, unit=""):
+    """Return a text with emoji color style based on thresholds."""
+    if low_ok:
+        if val < 30:
+            icon = "🟢"
+        elif val < 60:
+            icon = "🟡"
+        else:
+            icon = "🟥"
+    else:
+        if val < 40:
+            icon = "🟥"
+        elif val < 60:
+            icon = "🟡"
+        else:
+            icon = "🟢"
+    return f"{icon} {val:.1f}{unit}"
+
+
 # -------------------------------------------------
-# SIDEBAR
+# SIDEBAR NAV
 # -------------------------------------------------
 st.sidebar.title("GR Strategist Lite")
 car = st.sidebar.selectbox("Car", ["GR86-035 Demo", "GR86-047 Demo"])
 target_lap = st.sidebar.slider("Simulate laps up to", 5, MAX_LAPS, 15)
+
+page = st.sidebar.radio(
+    "View",
+    ["Race HUD", "Strategy & Pit Window", "Telemetry & Driver", "Track & Weather", "Pit Loss Tool"],
+)
 
 if st.sidebar.button("Reset stint"):
     st.session_state.clear()
@@ -304,6 +335,7 @@ current_tire = float(current_row["tire_remaining"])
 fuel_percent = float(current_row["fuel_percent"])
 fuel_laps_left = fuel_percent / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
 current_lap_time = float(current_row["lap_time"])
+attack = aggression_level(current_row)
 
 future = predict_future(current_row)
 pit_start, pit_end = pick_pit_window(future)
@@ -315,125 +347,226 @@ cons_score, cons_text = driver_consistency_score(hist)
 s1, s2, s3 = sector_heat(hist)
 
 # -------------------------------------------------
-# TOP METRICS
+# PAGE: RACE HUD
 # -------------------------------------------------
-st.title("🏁 GR Strategist Lite — Real-Time Pit Strategy Assistant")
-st.caption(f"{car} • synthetic GR Cup stint • up to {MAX_LAPS} laps")
+if page == "Race HUD":
+    st.title("🏁 GR Strategist Lite — Race HUD (Esports Mode)")
+    st.caption(f"{car} • synthetic GR Cup stint • up to {MAX_LAPS} laps")
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Current Lap", current_lap)
-m2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
-m3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
-m4.metric("Fuel Remaining (%)", f"{fuel_percent:.1f}")
+    top1, top2, top3, top4 = st.columns(4)
+    top1.metric("Current Lap", current_lap)
+    top2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
+    top3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
+    top4.metric("Fuel", f"{fuel_percent:.1f}%  (~{fuel_laps_left:.1f} laps)")
 
-st.write(
-    f"**Estimated fuel laps left:** ~{fuel_laps_left:.1f} laps  •  "
-    f"**Driver consistency:** {cons_score}/100 – {cons_text}"
-)
-
-# -------------------------------------------------
-# LAP + TIRE CHARTS
-# -------------------------------------------------
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("Lap Time Trend")
-    st.line_chart(hist.set_index("lap")["lap_time"])
-with c2:
-    st.subheader("Tire Wear vs Laps")
-    st.line_chart(hist.set_index("lap")["tire_remaining"])
-
-# -------------------------------------------------
-# TIRE PSI / TEMPERATURE / INPUTS
-# -------------------------------------------------
-st.markdown("---")
-st.subheader("🛞 Tire & Telemetry Snapshot")
-
-t1, t2, t3, t4 = st.columns(4)
-t1.metric("FL Pressure (psi)", f"{current_row['fl_psi']:.1f}")
-t2.metric("FR Pressure (psi)", f"{current_row['fr_psi']:.1f}")
-t3.metric("RL Pressure (psi)", f"{current_row['rl_psi']:.1f}")
-t4.metric("RR Pressure (psi)", f"{current_row['rr_psi']:.1f}")
-
-u1, u2, u3, u4 = st.columns(4)
-u1.metric("FL Temp (°C)", f"{current_row['fl_temp']:.1f}")
-u2.metric("FR Temp (°C)", f"{current_row['fr_temp']:.1f}")
-u3.metric("RL Temp (°C)", f"{current_row['rl_temp']:.1f}")
-u4.metric("RR Temp (°C)", f"{current_row['rr_temp']:.1f}")
-
-tb1, tb2, tb3 = st.columns(3)
-tb1.metric("Throttle Avg (%)", f"{current_row['throttle_pct']:.0f}")
-tb2.metric("Brake Avg (%)", f"{current_row['brake_pct']:.0f}")
-tb3.metric(
-    "G-Forces (Lat / Long)",
-    f"{current_row['g_lat']:.1f} / {current_row['g_long']:.1f}",
-)
-
-# -------------------------------------------------
-# STRATEGY ENGINE
-# -------------------------------------------------
-st.markdown("---")
-st.subheader("🧠 Strategy Engine — Pit Window & Under/Overcut")
-
-if pit_start is None:
-    st.info("Not enough forecast to recommend a pit window yet.")
-else:
-    st.write(
-        f"🔍 **Recommended pit window:** laps **{pit_start}–{pit_end}** "
-        f"(balanced between tire life, pace and remaining fuel)."
-    )
-    if uo:
-        gain = uo["gain_seconds"]
-        early = uo["early_lap"]
-        late = uo["late_lap"]
-        if gain > 0:
-            st.success(
-                f"📈 Undercut advantage: pitting on **lap {early}** is estimated "
-                f"~**{gain:.1f}s faster** than staying out until lap {late}."
-            )
-        elif gain < 0:
-            st.warning(
-                f"📉 Overcut advantage: staying out until **lap {late}** is estimated "
-                f"~**{abs(gain):.1f}s faster** than pitting early on lap {early}."
-            )
+    # Attack mode bar
+    st.markdown("### ⚡ Driver Attack Mode")
+    att_col1, att_col2 = st.columns([3, 1])
+    with att_col1:
+        bar_len = int(attack // 5)
+        bar = "█" * bar_len + "░" * (20 - bar_len)
+        st.write(f"`{bar}`  {attack:.0f}/100")
+    with att_col2:
+        if attack > 80:
+            st.markdown("#### ⚡⚡ ATTACK!")
+        elif attack > 60:
+            st.markdown("#### 🔺 Push")
         else:
-            st.info("⚖️ Under vs overcut are roughly equivalent over the next stint.")
+            st.markdown("#### 🟦 Manage")
+
+    st.markdown("---")
+    st.subheader("🛞 Angled GR86 Tire HUD (psi / temp / health)")
+
+    # Compute simple "health" per tire from global tire remaining & temps
+    def tire_health(temp: float) -> float:
+        overheat_penalty = max(0, temp - 105) * 0.7
+        return float(np.clip(current_tire - overheat_penalty, 0, 100))
+
+    fl_health = tire_health(current_row["fl_temp"])
+    fr_health = tire_health(current_row["fr_temp"])
+    rl_health = tire_health(current_row["rl_temp"])
+    rr_health = tire_health(current_row["rr_temp"])
+
+    # Top tires (fronts)
+    ft1, mid_car, ft2 = st.columns([3, 4, 3])
+    with ft1:
+        st.markdown("**FL Tire**")
+        st.write(f"PSI: {current_row['fl_psi']:.1f}")
+        st.write(f"Temp: {current_row['fl_temp']:.1f}°C")
+        st.write(f"Health: {colored_value(fl_health, low_ok=False, unit='%')}")
+    with mid_car:
+        st.markdown(
+            """
+            <div style="text-align:center; font-size: 20px;">
+            🏎️ <b>GR86 — 3D Attack View</b><br/>
+            <span style="font-size:12px; color:#999;">Front-biased aero & braking load</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with ft2:
+        st.markdown("**FR Tire**")
+        st.write(f"PSI: {current_row['fr_psi']:.1f}")
+        st.write(f"Temp: {current_row['fr_temp']:.1f}°C")
+        st.write(f"Health: {colored_value(fr_health, low_ok=False, unit='%')}")
+
+    # Rear tires
+    rb1, _, rb2 = st.columns([3, 4, 3])
+    with rb1:
+        st.markdown("**RL Tire**")
+        st.write(f"PSI: {current_row['rl_psi']:.1f}")
+        st.write(f"Temp: {current_row['rl_temp']:.1f}°C")
+        st.write(f"Health: {colored_value(rl_health, low_ok=False, unit='%')}")
+    with rb2:
+        st.markdown("**RR Tire**")
+        st.write(f"PSI: {current_row['rr_psi']:.1f}")
+        st.write(f"Temp: {current_row['rr_temp']:.1f}°C")
+        st.write(f"Health: {colored_value(rr_health, low_ok=False, unit='%')}")
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Lap Time Trend")
+        st.line_chart(hist.set_index("lap")["lap_time"])
+    with c2:
+        st.subheader("Tire Wear vs Laps")
+        st.line_chart(hist.set_index("lap")["tire_remaining"])
 
 # -------------------------------------------------
-# ALERTS
+# PAGE: STRATEGY & PIT WINDOW
+# -------------------------------------------------
+elif page == "Strategy & Pit Window":
+    st.title("🧠 Strategy & Pit Window")
+    st.caption(f"{car} • stint management")
+
+    st.metric("Current Lap", current_lap)
+    st.metric("Estimated fuel laps left", f"{fuel_laps_left:.1f}")
+
+    if pit_start is None:
+        st.info("Not enough forecast to recommend a pit window yet.")
+    else:
+        st.write(
+            f"🔍 **Recommended pit window:** laps **{pit_start}–{pit_end}** "
+            f"(tire 30–45%, fuel safe)."
+        )
+        if uo:
+            gain = uo["gain_seconds"]
+            early = uo["early_lap"]
+            late = uo["late_lap"]
+            if gain > 0:
+                st.success(
+                    f"📈 **Undercut advantage:** Pitting on lap {early} "
+                    f"is ~**{gain:.1f}s faster** over the next stint than staying out until lap {late}."
+                )
+            elif gain < 0:
+                st.warning(
+                    f"📉 **Overcut advantage:** Staying out until lap {late} "
+                    f"is ~**{abs(gain):.1f}s faster** than pitting early on lap {early}."
+                )
+            else:
+                st.info("⚖ Under vs overcut are roughly equivalent over the next stint.")
+
+    with st.expander("Show future prediction table"):
+        if not future.empty:
+            st.dataframe(future.reset_index(drop=True))
+        else:
+            st.write("No future data yet.")
+
+# -------------------------------------------------
+# PAGE: TELEMETRY & DRIVER
+# -------------------------------------------------
+elif page == "Telemetry & Driver":
+    st.title("📡 Telemetry & Driver Behaviour")
+    st.caption(f"{car} • driver inputs & consistency")
+
+    st.write(f"**Driver consistency:** {cons_score}/100 – {cons_text}")
+
+    tcol1, tcol2, tcol3 = st.columns(3)
+    tcol1.metric("Throttle Avg (%)", f"{current_row['throttle_pct']:.0f}")
+    tcol2.metric("Brake Avg (%)", f"{current_row['brake_pct']:.0f}")
+    tcol3.metric("G-Forces Lat/Long", f"{current_row['g_lat']:.1f} / {current_row['g_long']:.1f}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Throttle vs Laps")
+        st.line_chart(hist.set_index("lap")["throttle_pct"])
+    with c2:
+        st.subheader("Brake vs Laps")
+        st.line_chart(hist.set_index("lap")["brake_pct"])
+
+    with st.expander("Raw lap data"):
+        st.dataframe(hist.reset_index(drop=True))
+
+# -------------------------------------------------
+# PAGE: TRACK & WEATHER
+# -------------------------------------------------
+elif page == "Track & Weather":
+    st.title("🌦 Track & Weather Impact (Prototype)")
+    st.caption("Simulated relationship between ambient temp, tire wear and lap time.")
+
+    # Simple synthetic weather model
+    laps = hist["lap"].values
+    ambient = 22 + 0.12 * laps  # warm-up during the race
+    track_temp = ambient + 8
+
+    weather_df = pd.DataFrame(
+        {
+            "lap": laps,
+            "ambient_C": ambient,
+            "track_C": track_temp,
+            "lap_time": hist["lap_time"].values,
+            "tire_remaining": hist["tire_remaining"].values,
+        }
+    ).set_index("lap")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Track Temperature vs Lap")
+        st.line_chart(weather_df[["ambient_C", "track_C"]])
+    with c2:
+        st.subheader("Lap Time vs Track Temp")
+        st.line_chart(weather_df[["lap_time", "tire_remaining"]])
+
+    st.write(
+        """
+        **Interpretation (for judges):**
+        - As track temp rises, tires overheat → wear accelerates.
+        - The tool can be extended to:
+          * Suggest earlier pit windows on hot races.
+          * Recommend compound changes (Soft/Medium) when temps drop.
+        """
+    )
+
+# -------------------------------------------------
+# PAGE: PIT LOSS TOOL
+# -------------------------------------------------
+elif page == "Pit Loss Tool":
+    st.title("⛽ Pit Stop Loss & Risk Tool (Prototype)")
+    st.caption("Simple model to estimate total loss for a pit stop at different laps.")
+
+    in_lap_loss = st.slider("In-lap time loss (sec)", 4.0, 15.0, 8.0, 0.5)
+    pit_lane_loss = st.slider("Pit lane time (sec)", 15.0, 30.0, 22.0, 0.5)
+    out_lap_loss = st.slider("Out-lap time loss (sec)", 2.0, 12.0, 6.0, 0.5)
+
+    total_pit_loss = in_lap_loss + pit_lane_loss + out_lap_loss
+    st.metric("Estimated total pit loss", f"{total_pit_loss:.1f} sec")
+
+    st.write(
+        """
+        **How a team would use this:**
+        - Combine pit loss with undercut/overcut prediction
+        - Decide if the time gained on fresh tyres is worth the stop now
+        - Combine with safety car probability (future extension)
+        """
+    )
+
+# -------------------------------------------------
+# TRACK STRESS MAP (SHARED)
 # -------------------------------------------------
 st.markdown("---")
-st.subheader("⚠ Live Alerts")
+st.subheader("🔥 Track Sector Stress Map (shared across pages)")
 
-low_pressure = (
-    current_row["fl_psi"] < 21
-    or current_row["fr_psi"] < 21
-    or current_row["rl_psi"] < 21
-    or current_row["rr_psi"] < 21
-)
-overheated = (
-    current_row["fl_temp"] > 115
-    or current_row["fr_temp"] > 115
-    or current_row["rl_temp"] > 115
-    or current_row["rr_temp"] > 115
-)
-low_fuel = fuel_laps_left <= 3 or fuel_percent < 15
-
-if low_pressure:
-    st.error("🟥 Tire pressure critical – possible slow puncture. **PIT NOW**.")
-if overheated:
-    st.warning("🟧 Tire temps very high – manage pace or pit soon.")
-if low_fuel:
-    st.error("⛽ Fuel critically low – plan to **pit within 1–2 laps**.")
-
-if not (low_pressure or overheated or low_fuel):
-    st.success("✅ No critical issues – car healthy. Free to extend the stint.")
-
-# -------------------------------------------------
-# TRACK HEAT MAP
-# -------------------------------------------------
-st.markdown("---")
-st.subheader("🔥 Track Sector Stress Map")
-
+s1, s2, s3 = sector_heat(hist)
 heat_df = pd.DataFrame(
     {
         "Sector": ["S1 – Heavy Braking", "S2 – High Speed", "S3 – Traction Zones"],
@@ -449,9 +582,3 @@ for sector, stress in zip(heat_df["Sector"], heat_df["Stress"]):
         st.write(f"🟧 {sector}: moderate–high stress – manage inputs.")
     else:
         st.write(f"🟩 {sector}: low–medium stress – safe for pushing.")
-
-# -------------------------------------------------
-# RAW DATA TABLE
-# -------------------------------------------------
-with st.expander("Show underlying lap data"):
-    st.dataframe(hist.reset_index(drop=True))
