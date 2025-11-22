@@ -306,6 +306,79 @@ def colored_value(val, low_ok=True, unit=""):
     return f"{icon} {val:.1f}{unit}"
 
 
+def ai_pit_advice(current_lap: int,
+                  current_tire: float,
+                  fuel_laps_left: float,
+                  pit_start,
+                  pit_end,
+                  uo):
+    """
+    Hybrid AI advisor:
+    - Critical if fuel or tires are very low
+    - Warning if in pit window or strong undercut
+    - Otherwise, stay out & manage
+    Returns (level, title, message)
+    """
+    messages = []
+
+    # Fuel logic
+    if fuel_laps_left <= 1.5:
+        messages.append((
+            3, "critical", "Fuel critical",
+            f"⛽ Fuel remaining for only ~{fuel_laps_left:.1f} laps. Box this lap or risk running dry."
+        ))
+    elif fuel_laps_left <= 3.0:
+        messages.append((
+            2, "warn", "Fuel window",
+            f"⛽ Fuel getting low (~{fuel_laps_left:.1f} laps left). Plan to pit in the next 1–2 laps."
+        ))
+
+    # Tire logic
+    if current_tire <= 25:
+        messages.append((
+            3, "critical", "Tire cliff incoming",
+            f"🛞 Global tire life at {current_tire:.1f}%. Expect big lap-time drop – pit now or very soon."
+        ))
+    elif current_tire <= 40:
+        messages.append((
+            2, "warn", "High tire wear",
+            f"🛞 Tire life {current_tire:.1f}% – you're approaching the drop-off zone."
+        ))
+
+    # Undercut / overcut logic
+    if uo is not None:
+        gain = uo["gain_seconds"]
+        early = uo["early_lap"]
+        late = uo["late_lap"]
+        if gain > 5:
+            messages.append((
+                2, "warn", "Strong undercut opportunity",
+                f"📈 Pitting around lap {early} gains ~{gain:.1f}s vs staying to lap {late}."
+            ))
+        elif gain > 2:
+            messages.append((
+                1, "info", "Mild undercut gain",
+                f"📈 Undercut on lap {early} is ~{gain:.1f}s faster than pitting later."
+            ))
+
+    # If in recommended pit window, push advice
+    if (pit_start is not None) and (pit_end is not None):
+        if pit_start <= current_lap <= pit_end:
+            messages.append((
+                2, "warn", "Inside ideal pit window",
+                f"🧠 You are inside the recommended pit window (laps {pit_start}-{pit_end}). "
+                "Fresh tyres now will stabilise pace."
+            ))
+
+    if not messages:
+        return ("ok", "Stay out", "✅ Tires and fuel are within a comfortable range. Stay out and manage pace.")
+
+    # Pick highest priority (3 critical > 2 warn > 1 info)
+    messages.sort(key=lambda x: x[0], reverse=True)
+    _, level, title, msg = messages[0]
+    return (level, title, msg)
+
+
 # -------------------------------------------------
 # SIDEBAR NAV
 # -------------------------------------------------
@@ -346,8 +419,18 @@ uo = under_overcut_compare(current_lap, pit_center, future)
 cons_score, cons_text = driver_consistency_score(hist)
 s1, s2, s3 = sector_heat(hist)
 
+# Get AI pit advice (Hybrid mode)
+ai_level, ai_title, ai_message = ai_pit_advice(
+    current_lap=current_lap,
+    current_tire=current_tire,
+    fuel_laps_left=fuel_laps_left,
+    pit_start=pit_start,
+    pit_end=pit_end,
+    uo=uo,
+)
+
 # -------------------------------------------------
-# PAGE: RACE HUD (with GR86 heat map)
+# PAGE: RACE HUD (with GR86 heat map + AI pit advisor)
 # -------------------------------------------------
 if page == "Race HUD":
     st.title("🏁 GR Strategist Lite — Race HUD (Esports Mode)")
@@ -359,6 +442,15 @@ if page == "Race HUD":
     top2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
     top3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
     top4.metric("Fuel", f"{fuel_percent:.1f}%  (~{fuel_laps_left:.1f} laps)")
+
+    # ---- AI Pit Advisor banner ----
+    st.markdown("### 🎧 AI Pit Engineer")
+    if ai_level == "critical":
+        st.error(f"**{ai_title}** – {ai_message}")
+    elif ai_level == "warn":
+        st.warning(f"**{ai_title}** – {ai_message}")
+    else:
+        st.success(f"**{ai_title}** – {ai_message}")
 
     # ---- Driver attack mode (RPM bar + lightning) ----
     st.markdown("### ⚡ Driver Attack Mode")
@@ -432,33 +524,36 @@ if page == "Race HUD":
         """One tire with tooltip (psi/temp/health)."""
         tooltip = f"{label}: {temp:.1f}°C • {psi:.1f} psi • {health:.1f}% health"
         return f"""
-        <div style="text-align:center;" title="{tooltip}">
+        <div style='text-align:center;' title="{tooltip}">
           <div style="
-              width:60px;height:60px;
+              width:70px;height:70px;
               border-radius:50%;
               border:3px solid #111;
-              box-shadow:0 0 12px {color};
-              background:radial-gradient(circle at 30% 30%, #ffffff55, {color});
+              box-shadow:0 0 14px {color};
+              background:radial-gradient(circle at 30% 30%,
+                                         rgba(255,255,255,0.35),
+                                         {color});
           "></div>
           <div style="font-size:11px;margin-top:4px;color:#ddd;">{label}</div>
+          <div style="font-size:10px;color:#aaa;">{temp:.0f}°C • {psi:.1f} psi</div>
         </div>
         """
 
     # GR livery car body (white / red / black)
     car_body_html = """
     <div style="
-        width:170px;height:80px;
-        border-radius:22px;
+        width:180px;height:90px;
+        border-radius:24px;
         border:3px solid #111;
         background:
            linear-gradient(90deg,
                 #ffffff 0%,
-                #ffffff 38%,
-                #ff0000 38%,
-                #ff0000 70%,
-                #000000 70%,
+                #ffffff 40%,
+                #ff0000 40%,
+                #ff0000 72%,
+                #000000 72%,
                 #000000 100%);
-        box-shadow:0 0 18px #ff174455;
+        box-shadow:0 0 20px #ff174455;
         display:flex;
         align-items:center;
         justify-content:center;
@@ -486,7 +581,7 @@ if page == "Race HUD":
       <div style="font-size:13px;color:#bbb;margin-top:10px;">REAR AXLE</div>
       <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
         {tire_html("RL", rl_temp, rl_psi, rl_health, rl_col)}
-        <div style="width:170px;"></div>
+        <div style="width:180px;"></div>
         {tire_html("RR", rr_temp, rr_psi, rr_health, rr_col)}
       </div>
     </div>
