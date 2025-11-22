@@ -800,20 +800,20 @@ if page == "Race HUD":
     # ROAD AMERICA TRACK MAP SECTION
     # ================================
     import random
-st.markdown("### 🗺 Race Map View (Prototype)")
-gps_mode = st.checkbox("Enable GPS Layout Mode", value=True)
+    st.markdown("### 🗺 Race Map View (Prototype)")
+    gps_mode = st.checkbox("Enable GPS Layout Mode", value=True)
 
-# Build improved track map
-track_html = build_track_map_html(
-    view_lap=view_lap,
-    view_row=view_row,
-    gps_mode=gps_mode,
-    s1=s1,
-    s2=s2,
-    s3=s3,
+    # Build improved track map
+    track_html = build_track_map_html(
+        view_lap=view_lap,
+        view_row=view_row,
+        gps_mode=gps_mode,
+        s1=s1,
+        s2=s2,
+        s3=s3,
 )
 
-st.markdown(track_html, unsafe_allow_html=True)
+    st.markdown(track_html, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # STRATEGY & PIT WINDOW
