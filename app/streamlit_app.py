@@ -800,56 +800,20 @@ if page == "Race HUD":
     # ROAD AMERICA TRACK MAP SECTION
     # ================================
     import random
+st.markdown("### 🗺 Race Map View (Prototype)")
+gps_mode = st.checkbox("Enable GPS Layout Mode", value=True)
 
-    st.markdown("### 🗺 Race Map View (Prototype)")
-    gps_mode = st.checkbox("Enable GPS Mode (Experimental)", value=True)
+# Build improved track map
+track_html = build_track_map_html(
+    view_lap=view_lap,
+    view_row=view_row,
+    gps_mode=gps_mode,
+    s1=s1,
+    s2=s2,
+    s3=s3,
+)
 
-    lap_norm = min(1.0, view_lap / MAX_LAPS)
-    points_x = [45, 72, 83, 78, 60, 42, 30, 20, 28]
-    points_y = [88, 78, 60, 42, 22, 20, 38, 62, 80]
-
-    idx = int(lap_norm * (len(points_x) - 1))
-    cx = points_x[idx]
-    cy = points_y[idx]
-
-    incident_html = ""
-    if bool(view_row.get("is_sc_lap", False)):
-        incident_html = f"""
-        <circle cx='{cx}' cy='{cy}' r='4'
-            fill='yellow' stroke='#111' stroke-width='1.5'/>
-        <text x='{cx}' y='{cy-6}' text-anchor='middle'
-            font-size='3.5' fill='yellow'>⚠</text>
-        """
-
-    svg = f"""
-    <svg viewBox="0 0 100 100" width="400" height="400"
-        style="background:#05060B;border-radius:12px">
-      <polyline points="45,88 72,78 83,60 78,42 60,22 42,20 30,38 20,62 28,80 45,88"
-                fill="none" stroke="#aaa" stroke-width="1.2"/>
-
-      <rect x="6" y="6" width="12" height="6"
-            fill="rgba(255,255,255,0.03)" stroke="#FF9100"
-            stroke-width="0.6"/>
-      <text x="12" y="11" font-size="3" fill="#FFB74D"
-            text-anchor="middle">PIT</text>
-
-      <line x1="50" y1="90" x2="50" y2="84"
-            stroke="#fff" stroke-width="0.7"/>
-      <text x="50" y="96" font-size="3" fill="#ccc"
-            text-anchor="middle">S/F</text>
-
-      <circle cx="{cx}" cy="{cy}" r="2.6"
-          fill="#00E676" stroke="#fff" stroke-width="0.6"/>
-      <text x="{cx}" y="{cy-3}" font-size="3"
-          fill="#111" text-anchor="middle"
-          font-weight="bold">86</text>
-
-      {incident_html}
-    </svg>
-    """
-    st.markdown(svg, unsafe_allow_html=True)
-
-    st.markdown("---")
+st.markdown(track_html, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # STRATEGY & PIT WINDOW
