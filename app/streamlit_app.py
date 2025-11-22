@@ -347,25 +347,36 @@ cons_score, cons_text = driver_consistency_score(hist)
 s1, s2, s3 = sector_heat(hist)
 
 # -------------------------------------------------
-# PAGE: RACE HUD
+# PAGE: RACE HUD (with GR86 heat map)
 # -------------------------------------------------
 if page == "Race HUD":
     st.title("🏁 GR Strategist Lite — Race HUD (Esports Mode)")
     st.caption(f"{car} • synthetic GR Cup stint • up to {MAX_LAPS} laps")
 
+    # ---- Top summary metrics ----
     top1, top2, top3, top4 = st.columns(4)
     top1.metric("Current Lap", current_lap)
     top2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
     top3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
     top4.metric("Fuel", f"{fuel_percent:.1f}%  (~{fuel_laps_left:.1f} laps)")
 
-    # Attack mode bar
+    # ---- Driver attack mode (RPM bar + lightning) ----
     st.markdown("### ⚡ Driver Attack Mode")
-    att_col1, att_col2 = st.columns([3, 1])
+    att_col1, att_col2 = st.columns([4, 1])
     with att_col1:
-        bar_len = int(attack // 5)
-        bar = "█" * bar_len + "░" * (20 - bar_len)
-        st.write(f"`{bar}`  {attack:.0f}/100")
+        bar_len = int(attack // 5)           # 0–20 blocks
+        green_len = min(bar_len, 12)
+        yellow_len = max(min(bar_len - 12, 4), 0)
+        red_len = max(bar_len - 16, 0)
+
+        bar = (
+            "🟩" * green_len +
+            "🟨" * yellow_len +
+            "🟥" * red_len +
+            "▫️" * (20 - bar_len)
+        )
+        st.write(f"`{bar}`  **{attack:.0f}/100**")
+
     with att_col2:
         if attack > 80:
             st.markdown("#### ⚡⚡ ATTACK!")
@@ -375,53 +386,136 @@ if page == "Race HUD":
             st.markdown("#### 🟦 Manage")
 
     st.markdown("---")
-    st.subheader("🛞 Angled GR86 Tire HUD (psi / temp / health)")
+    st.subheader("🚗 Top-Down GR86 Tire Heat Map (psi / temp / health)")
 
-    # Compute simple "health" per tire from global tire remaining & temps
+    # ---- Tire health & color helpers ----
     def tire_health(temp: float) -> float:
+        # Global wear minus extra penalty for overheating
         overheat_penalty = max(0, temp - 105) * 0.7
         return float(np.clip(current_tire - overheat_penalty, 0, 100))
 
-    fl_health = tire_health(current_row["fl_temp"])
-    fr_health = tire_health(current_row["fr_temp"])
-    rl_health = tire_health(current_row["rl_temp"])
-    rr_health = tire_health(current_row["rr_temp"])
+    def tire_color(temp: float) -> str:
+        # Returns a hex color for the tire fill based on temp bands
+        if temp < 85:
+            return "#2196F3"   # blue (cold)
+        elif temp < 100:
+            return "#00E676"   # green (optimal)
+        elif temp < 115:
+            return "#FF9100"   # orange (hot)
+        else:
+            return "#FF1744"   # red (critical)
 
-    # Top tires (fronts)
-    ft1, mid_car, ft2 = st.columns([3, 4, 3])
-    with ft1:
-        st.markdown("**FL Tire**")
-        st.write(f"PSI: {current_row['fl_psi']:.1f}")
-        st.write(f"Temp: {current_row['fl_temp']:.1f}°C")
-        st.write(f"Health: {colored_value(fl_health, low_ok=False, unit='%')}")
-    with mid_car:
-        st.markdown(
-            """
-            <div style="text-align:center; font-size: 20px;">
-            🏎️ <b>GR86 — 3D Attack View</b><br/>
-            <span style="font-size:12px; color:#999;">Front-biased aero & braking load</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with ft2:
-        st.markdown("**FR Tire**")
-        st.write(f"PSI: {current_row['fr_psi']:.1f}")
-        st.write(f"Temp: {current_row['fr_temp']:.1f}°C")
-        st.write(f"Health: {colored_value(fr_health, low_ok=False, unit='%')}")
+    # Current temps / pressures
+    fl_temp = float(current_row["fl_temp"])
+    fr_temp = float(current_row["fr_temp"])
+    rl_temp = float(current_row["rl_temp"])
+    rr_temp = float(current_row["rr_temp"])
 
-    # Rear tires
-    rb1, _, rb2 = st.columns([3, 4, 3])
-    with rb1:
-        st.markdown("**RL Tire**")
-        st.write(f"PSI: {current_row['rl_psi']:.1f}")
-        st.write(f"Temp: {current_row['rl_temp']:.1f}°C")
-        st.write(f"Health: {colored_value(rl_health, low_ok=False, unit='%')}")
-    with rb2:
-        st.markdown("**RR Tire**")
-        st.write(f"PSI: {current_row['rr_psi']:.1f}")
-        st.write(f"Temp: {current_row['rr_temp']:.1f}°C")
-        st.write(f"Health: {colored_value(rr_health, low_ok=False, unit='%')}")
+    fl_psi = float(current_row["fl_psi"])
+    fr_psi = float(current_row["fr_psi"])
+    rl_psi = float(current_row["rl_psi"])
+    rr_psi = float(current_row["rr_psi"])
+
+    # Health values
+    fl_health = tire_health(fl_temp)
+    fr_health = tire_health(fr_temp)
+    rl_health = tire_health(rl_temp)
+    rr_health = tire_health(rr_temp)
+
+    # Colors
+    fl_col = tire_color(fl_temp)
+    fr_col = tire_color(fr_temp)
+    rl_col = tire_color(rl_temp)
+    rr_col = tire_color(rr_temp)
+
+    def tire_html(label: str, temp: float, psi: float, health: float, color: str) -> str:
+        """One tire with tooltip (psi/temp/health)."""
+        tooltip = f"{label}: {temp:.1f}°C • {psi:.1f} psi • {health:.1f}% health"
+        return f"""
+        <div style="text-align:center;" title="{tooltip}">
+          <div style="
+              width:60px;height:60px;
+              border-radius:50%;
+              border:3px solid #111;
+              box-shadow:0 0 12px {color};
+              background:radial-gradient(circle at 30% 30%, #ffffff55, {color});
+          "></div>
+          <div style="font-size:11px;margin-top:4px;color:#ddd;">{label}</div>
+        </div>
+        """
+
+    # GR livery car body (white / red / black)
+    car_body_html = """
+    <div style="
+        width:170px;height:80px;
+        border-radius:22px;
+        border:3px solid #111;
+        background:
+           linear-gradient(90deg,
+                #ffffff 0%,
+                #ffffff 38%,
+                #ff0000 38%,
+                #ff0000 70%,
+                #000000 70%,
+                #000000 100%);
+        box-shadow:0 0 18px #ff174455;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        color:#f5f5f5;
+        font-size:13px;
+        font-weight:600;
+    ">
+      GR86 — Top View
+    </div>
+    <div style="font-size:10px;color:#aaa;margin-top:2px;text-align:center;">
+      Toyota Gazoo Racing livery • front-biased aero & braking load
+    </div>
+    """
+
+    # Layout: FRONT row + REAR row
+    heatmap_html = f"""
+    <div style="display:flex;flex-direction:column;align-items:center;gap:18px;margin-top:8px;">
+      <div style="font-size:13px;color:#bbb;">FRONT AXLE</div>
+      <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
+        {tire_html("FL", fl_temp, fl_psi, fl_health, fl_col)}
+        {car_body_html}
+        {tire_html("FR", fr_temp, fr_psi, fr_health, fr_col)}
+      </div>
+
+      <div style="font-size:13px;color:#bbb;margin-top:10px;">REAR AXLE</div>
+      <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
+        {tire_html("RL", rl_temp, rl_psi, rl_health, rl_col)}
+        <div style="width:170px;"></div>
+        {tire_html("RR", rr_temp, rr_psi, rr_health, rr_col)}
+      </div>
+    </div>
+    """
+
+    st.markdown(heatmap_html, unsafe_allow_html=True)
+
+    # ---- Embedded alerts from heat zones ----
+    alerts = []
+    for label, temp, health in [
+        ("FL", fl_temp, fl_health),
+        ("FR", fr_temp, fr_health),
+        ("RL", rl_temp, rl_health),
+        ("RR", rr_temp, rr_health),
+    ]:
+        if temp > 115:
+            alerts.append(f"{label} tire CRITICAL temp ({temp:.1f}°C) – pit soon.")
+        elif temp > 105:
+            alerts.append(f"{label} tire overheating ({temp:.1f}°C) – manage pace.")
+        if health < 35:
+            alerts.append(f"{label} tire very low health ({health:.1f}%) – nearing cliff.")
+
+    if alerts:
+        st.markdown("#### ⚠ Tire & Grip Alerts")
+        for msg in alerts:
+            st.warning("🛞 " + msg)
+    else:
+        st.markdown("#### ✅ Tires in acceptable window")
+        st.info("All four tires are within safe temperature and health ranges.")
 
     st.markdown("---")
     c1, c2 = st.columns(2)
@@ -524,7 +618,7 @@ elif page == "Track & Weather":
         st.subheader("Track Temperature vs Lap")
         st.line_chart(weather_df[["ambient_C", "track_C"]])
     with c2:
-        st.subheader("Lap Time vs Track Temp")
+        st.subheader("Lap Time vs Tire & Temp")
         st.line_chart(weather_df[["lap_time", "tire_remaining"]])
 
     st.write(
@@ -566,7 +660,6 @@ elif page == "Pit Loss Tool":
 st.markdown("---")
 st.subheader("🔥 Track Sector Stress Map (shared across pages)")
 
-s1, s2, s3 = sector_heat(hist)
 heat_df = pd.DataFrame(
     {
         "Sector": ["S1 – Heavy Braking", "S2 – High Speed", "S3 – Traction Zones"],
