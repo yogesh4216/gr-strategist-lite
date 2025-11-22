@@ -345,6 +345,39 @@ def ai_pit_advice(current_lap: int,
     return (level, title, msg)
 
 
+def safety_car_probability(row: pd.Series) -> float:
+    """
+    Simple safety car risk model:
+    - High tire wear
+    - Low fuel (risk of stoppage)
+    - High G-forces
+    - High aggression
+    Returns probability 0–1.
+    """
+    risk = 0.0
+
+    # Tire-based risk
+    if row["tire_remaining"] < 40:
+        risk += (40 - row["tire_remaining"]) * 0.015
+
+    # Fuel-based risk
+    if row["fuel_percent"] < 20:
+        risk += (20 - row["fuel_percent"]) * 0.02
+
+    # G-force risk (off-track, spins)
+    if row["g_lat"] > 2.0 or row["g_long"] > 1.8:
+        risk += 0.15
+
+    # Aggression risk
+    aggr = aggression_level(row)
+    if aggr > 80:
+        risk += 0.12
+    elif aggr > 65:
+        risk += 0.06
+
+    return float(np.clip(risk, 0.0, 1.0))
+
+
 # -------------------------------------------------
 # SIDEBAR NAV
 # -------------------------------------------------
@@ -368,6 +401,7 @@ if hist.empty:
     st.info("Simulating initial laps…")
     st.stop()
 
+# latest state (for non-playback pages)
 current_row = hist.iloc[-1]
 current_lap = int(current_row["lap"])
 current_tire = float(current_row["tire_remaining"])
@@ -385,15 +419,6 @@ uo = under_overcut_compare(current_lap, pit_center, future)
 cons_score, cons_text = driver_consistency_score(hist)
 s1, s2, s3 = sector_heat(hist)
 
-ai_level, ai_title, ai_message = ai_pit_advice(
-    current_lap=current_lap,
-    current_tire=current_tire,
-    fuel_laps_left=fuel_laps_left,
-    pit_start=pit_start,
-    pit_end=pit_end,
-    uo=uo,
-)
-
 # -------------------------------------------------
 # PAGE: RACE HUD
 # -------------------------------------------------
@@ -401,11 +426,33 @@ if page == "Race HUD":
     st.title("🏁 GR Strategist Lite — Race HUD (Esports Mode)")
     st.caption(f"{car} • synthetic GR Cup stint • up to {MAX_LAPS} laps")
 
+    # 🎥 Playback controls (lap view)
+    playback_lap = st.slider("🎥 Playback lap view", 1, current_lap, current_lap)
+    view_row = hist[hist["lap"] == playback_lap].iloc[0]
+
+    view_lap = int(view_row["lap"])
+    view_tire = float(view_row["tire_remaining"])
+    view_fuel = float(view_row["fuel_percent"])
+    view_fuel_laps_left = view_fuel / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
+    view_lap_time = float(view_row["lap_time"])
+    view_attack = aggression_level(view_row)
+
+    # Top metrics based on playback lap
     top1, top2, top3, top4 = st.columns(4)
-    top1.metric("Current Lap", current_lap)
-    top2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
-    top3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
-    top4.metric("Fuel", f"{fuel_percent:.1f}%  (~{fuel_laps_left:.1f} laps)")
+    top1.metric("Viewing Lap", view_lap, f"of {current_lap}")
+    top2.metric("Lap Time (s)", f"{view_lap_time:.3f}")
+    top3.metric("Tire Remaining (%)", f"{view_tire:.1f}")
+    top4.metric("Fuel", f"{view_fuel:.1f}%  (~{view_fuel_laps_left:.1f} laps)")
+
+    # AI Pit Engineer (recomputed for viewed lap)
+    ai_level, ai_title, ai_message = ai_pit_advice(
+        current_lap=view_lap,
+        current_tire=view_tire,
+        fuel_laps_left=view_fuel_laps_left,
+        pit_start=pit_start,
+        pit_end=pit_end,
+        uo=uo,
+    )
 
     st.markdown("### 🎧 AI Pit Engineer")
     if ai_level == "critical":
@@ -415,10 +462,21 @@ if page == "Race HUD":
     else:
         st.success(f"**{ai_title}** – {ai_message}")
 
+    # Safety car risk using viewed lap
+    risk = safety_car_probability(view_row)
+    st.markdown("### 🚨 Safety Car Risk Indicator")
+    if risk > 0.6:
+        st.error(f"🟥 Critical | {risk*100:.1f}% — SC deployment likely, reduce curb load & aggression!")
+    elif risk > 0.35:
+        st.warning(f"🟧 Elevated | {risk*100:.1f}% — watch tire integrity, fuel and track limits.")
+    else:
+        st.success(f"🟩 Low | {risk*100:.1f}% — stable phase, no SC expected soon.")
+
+    # Driver attack mode
     st.markdown("### ⚡ Driver Attack Mode")
     att_col1, att_col2 = st.columns([4, 1])
     with att_col1:
-        bar_len = int(attack // 5)           # 0–20 blocks
+        bar_len = int(view_attack // 5)           # 0–20 blocks
         green_len = min(bar_len, 12)
         yellow_len = max(min(bar_len - 12, 4), 0)
         red_len = max(bar_len - 16, 0)
@@ -429,12 +487,12 @@ if page == "Race HUD":
             "🟥" * red_len +
             "▫️" * (20 - bar_len)
         )
-        st.write(f"`{bar}`  **{attack:.0f}/100**")
+        st.write(f"`{bar}`  **{view_attack:.0f}/100**")
 
     with att_col2:
-        if attack > 80:
+        if view_attack > 80:
             st.markdown("#### ⚡⚡ ATTACK!")
-        elif attack > 60:
+        elif view_attack > 60:
             st.markdown("#### 🔺 Push")
         else:
             st.markdown("#### 🟦 Manage")
@@ -444,7 +502,7 @@ if page == "Race HUD":
 
     def tire_health(temp: float) -> float:
         overheat_penalty = max(0, temp - 105) * 0.7
-        return float(np.clip(current_tire - overheat_penalty, 0, 100))
+        return float(np.clip(view_tire - overheat_penalty, 0, 100))
 
     def tire_color(temp: float) -> str:
         if temp < 85:
@@ -456,15 +514,15 @@ if page == "Race HUD":
         else:
             return "#FF1744"
 
-    fl_temp = float(current_row["fl_temp"])
-    fr_temp = float(current_row["fr_temp"])
-    rl_temp = float(current_row["rl_temp"])
-    rr_temp = float(current_row["rr_temp"])
+    fl_temp = float(view_row["fl_temp"])
+    fr_temp = float(view_row["fr_temp"])
+    rl_temp = float(view_row["rl_temp"])
+    rr_temp = float(view_row["rr_temp"])
 
-    fl_psi = float(current_row["fl_psi"])
-    fr_psi = float(current_row["fr_psi"])
-    rl_psi = float(current_row["rl_psi"])
-    rr_psi = float(current_row["rr_psi"])
+    fl_psi = float(view_row["fl_psi"])
+    fr_psi = float(view_row["fr_psi"])
+    rl_psi = float(view_row["rl_psi"])
+    rr_psi = float(view_row["rr_psi"])
 
     fl_health = tire_health(fl_temp)
     fr_health = tire_health(fr_temp)
@@ -540,7 +598,6 @@ if page == "Race HUD":
     </div>
     """
 
-    # IMPORTANT: this actually renders the HTML
     st.markdown(heatmap_html, unsafe_allow_html=True)
 
     alerts = []
