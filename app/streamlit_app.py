@@ -162,12 +162,14 @@ def safety_car_probability(row: pd.Series) -> float:
     return float(np.clip(risk, 0.0, 1.0))
 
 
-def ai_pit_advice(current_lap: int,
-                  current_tire: float,
-                  fuel_laps_left: float,
-                  pit_start,
-                  pit_end,
-                  uo):
+def ai_pit_advice(
+    current_lap: int,
+    current_tire: float,
+    fuel_laps_left: float,
+    pit_start,
+    pit_end,
+    uo,
+):
     """
     Hybrid AI advisor:
     - Critical if fuel or tires are very low
@@ -178,49 +180,77 @@ def ai_pit_advice(current_lap: int,
     messages = []
 
     if fuel_laps_left <= 1.5:
-        messages.append((
-            3, "critical", "Fuel critical",
-            f"⛽ Fuel remaining for only ~{fuel_laps_left:.1f} laps. Box this lap or risk running dry."
-        ))
+        messages.append(
+            (
+                3,
+                "critical",
+                "Fuel critical",
+                f"⛽ Fuel remaining for only ~{fuel_laps_left:.1f} laps. Box this lap or risk running dry.",
+            )
+        )
     elif fuel_laps_left <= 3.0:
-        messages.append((
-            2, "warn", "Fuel window",
-            f"⛽ Fuel getting low (~{fuel_laps_left:.1f} laps left). Plan to pit in the next 1–2 laps."
-        ))
+        messages.append(
+            (
+                2,
+                "warn",
+                "Fuel window",
+                f"⛽ Fuel getting low (~{fuel_laps_left:.1f} laps left). Plan to pit in the next 1–2 laps.",
+            )
+        )
 
     if current_tire <= 25:
-        messages.append((
-            3, "critical", "Tire cliff incoming",
-            f"🛞 Global tire life at {current_tire:.1f}%. Expect big lap-time drop – pit now or very soon."
-        ))
+        messages.append(
+            (
+                3,
+                "critical",
+                "Tire cliff incoming",
+                f"🛞 Global tire life at {current_tire:.1f}%. Expect big lap-time drop – pit now or very soon.",
+            )
+        )
     elif current_tire <= 40:
-        messages.append((
-            2, "warn", "High tire wear",
-            f"🛞 Tire life {current_tire:.1f}% – you're approaching the drop-off zone."
-        ))
+        messages.append(
+            (
+                2,
+                "warn",
+                "High tire wear",
+                f"🛞 Tire life {current_tire:.1f}% – you're approaching the drop-off zone.",
+            )
+        )
 
     if uo is not None:
         gain = uo["gain_seconds"]
         early = uo["early_lap"]
         late = uo["late_lap"]
         if gain > 5:
-            messages.append((
-                2, "warn", "Strong undercut opportunity",
-                f"📈 Pitting around lap {early} gains ~{gain:.1f}s vs staying to lap {late}."
-            ))
+            messages.append(
+                (
+                    2,
+                    "warn",
+                    "Strong undercut opportunity",
+                    f"📈 Pitting around lap {early} gains ~{gain:.1f}s vs staying to lap {late}.",
+                )
+            )
         elif gain > 2:
-            messages.append((
-                1, "info", "Mild undercut gain",
-                f"📈 Undercut on lap {early} is ~{gain:.1f}s faster than pitting later."
-            ))
+            messages.append(
+                (
+                    1,
+                    "info",
+                    "Mild undercut gain",
+                    f"📈 Undercut on lap {early} is ~{gain:.1f}s faster than pitting later.",
+                )
+            )
 
     if (pit_start is not None) and (pit_end is not None):
         if pit_start <= current_lap <= pit_end:
-            messages.append((
-                2, "warn", "Inside ideal pit window",
-                f"🧠 You are inside the recommended pit window (laps {pit_start}-{pit_end}). "
-                "Fresh tyres now will stabilise pace."
-            ))
+            messages.append(
+                (
+                    2,
+                    "warn",
+                    "Inside ideal pit window",
+                    f"🧠 You are inside the recommended pit window (laps {pit_start}-{pit_end}). "
+                    "Fresh tyres now will stabilise pace.",
+                )
+            )
 
     if not messages:
         return ("ok", "Stay out", "✅ Tires and fuel are within a comfortable range. Stay out and manage pace.")
@@ -241,10 +271,21 @@ def get_track_polyline(gps_mode: bool):
     """
     # Basic hand-tuned outline – shaped roughly like Road America
     base_pts = [
-        (10, 10),  (30, 8),  (55, 10), (75, 20),  # main straight + T1/T3
-        (85, 30),  (88, 45), (80, 60), (65, 70),  # carousel area
-        (45, 78),  (30, 72), (20, 60), (15, 45),  # kink and mid-field
-        (12, 30),  (10, 18), (10, 10),            # back to start/finish
+        (10, 10),
+        (30, 8),
+        (55, 10),
+        (75, 20),  # main straight + T1/T3
+        (85, 30),
+        (88, 45),
+        (80, 60),
+        (65, 70),  # carousel area
+        (45, 78),
+        (30, 72),
+        (20, 60),
+        (15, 45),  # kink and mid-field
+        (12, 30),
+        (10, 18),
+        (10, 10),  # back to start/finish
     ]
 
     if gps_mode:
@@ -254,12 +295,14 @@ def get_track_polyline(gps_mode: bool):
         return base_pts
 
 
-def build_track_map_html(view_lap: int,
-                         view_row: pd.Series,
-                         gps_mode: bool,
-                         s1: float,
-                         s2: float,
-                         s3: float) -> str:
+def build_track_map_html(
+    view_lap: int,
+    view_row: pd.Series,
+    gps_mode: bool,
+    s1: float,
+    s2: float,
+    s3: float,
+) -> str:
     """
     Builds an inline SVG mini-map of Road America:
     - Polyline track
@@ -358,7 +401,7 @@ def simulate_next_lap() -> dict:
     if (not st.session_state.sc_active) and len(st.session_state.history) > 0:
         prev_row = st.session_state.history.iloc[-1]
         risk = safety_car_probability(prev_row)  # B: risk-based
-        base_chance = 0.02                       # A: small random base
+        base_chance = 0.02  # A: small random base
         chance = base_chance + risk * 0.25
         if RNG.random() < chance:
             st.session_state.sc_active = True
@@ -376,9 +419,7 @@ def simulate_next_lap() -> dict:
         0.0, st.session_state.tire_remaining - wear_per_lap + wear_variation
     )
 
-    fuel_percent = max(
-        0.0, st.session_state.fuel_percent - fuel_per_lap
-    )
+    fuel_percent = max(0.0, st.session_state.fuel_percent - fuel_per_lap)
 
     if sc_active:
         throttle_mean = 0.6
@@ -399,7 +440,7 @@ def simulate_next_lap() -> dict:
     brake = np.clip(RNG.normal(brake_mean, 0.1), 0.05, 1.0)
 
     degradation = (100.0 - tire_remaining) * PACE_PER_WEAR
-    smoothness_factor = (1.1 - throttle + 0.3 * brake)
+    smoothness_factor = 1.1 - throttle + 0.3 * brake
     noise = RNG.normal(0, noise_scale)
     lap_time = BASE_PACE + degradation * smoothness_factor + noise + sc_time_delta
 
@@ -409,10 +450,28 @@ def simulate_next_lap() -> dict:
     rl_temp = base_temp - 5 + RNG.normal(0, TEMP_NOISE) + throttle * 4
     rr_temp = base_temp - 3 + RNG.normal(0, TEMP_NOISE) + throttle * 5
 
-    fl_psi = BASE_PRESSURE_PSI + RNG.normal(0, PRESSURE_NOISE) + (fl_temp - TEMP_BASE) * 0.02
-    fr_psi = BASE_PRESSURE_PSI + RNG.normal(0, PRESSURE_NOISE) + (fr_temp - TEMP_BASE) * 0.02
-    rl_psi = BASE_PRESSURE_PSI - 0.5 + RNG.normal(0, PRESSURE_NOISE) + (rl_temp - TEMP_BASE) * 0.015
-    rr_psi = BASE_PRESSURE_PSI - 0.3 + RNG.normal(0, PRESSURE_NOISE) + (rr_temp - TEMP_BASE) * 0.015
+    fl_psi = (
+        BASE_PRESSURE_PSI
+        + RNG.normal(0, PRESSURE_NOISE)
+        + (fl_temp - TEMP_BASE) * 0.02
+    )
+    fr_psi = (
+        BASE_PRESSURE_PSI
+        + RNG.normal(0, PRESSURE_NOISE)
+        + (fr_temp - TEMP_BASE) * 0.02
+    )
+    rl_psi = (
+        BASE_PRESSURE_PSI
+        - 0.5
+        + RNG.normal(0, PRESSURE_NOISE)
+        + (rl_temp - TEMP_BASE) * 0.015
+    )
+    rr_psi = (
+        BASE_PRESSURE_PSI
+        - 0.3
+        + RNG.normal(0, PRESSURE_NOISE)
+        + (rr_temp - TEMP_BASE) * 0.015
+    )
 
     g_lat = np.clip(RNG.normal(g_lat_mean, 0.15), 0.8, 2.5)
     g_long = np.clip(RNG.normal(g_long_mean, 0.12), 0.6, 2.0)
@@ -543,7 +602,7 @@ def under_overcut_compare(current_lap: int, pit_lap: int, future_df: pd.DataFram
 
 
 # -------------------------------------------------
-# SIDEBAR NAV + MANUAL SC CONTROL (C)
+# SIDEBAR NAV + MANUAL SC CONTROL
 # -------------------------------------------------
 st.sidebar.title("GR Strategist Lite")
 car = st.sidebar.selectbox("Car", ["GR86-035 Demo", "GR86-047 Demo"])
@@ -605,7 +664,9 @@ if page == "Race HUD":
     view_lap = int(view_row["lap"])
     view_tire = float(view_row["tire_remaining"])
     view_fuel = float(view_row["fuel_percent"])
-    view_fuel_laps_left = view_fuel / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
+    view_fuel_laps_left = (
+        view_fuel / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
+    )
     view_lap_time = float(view_row["lap_time"])
     view_attack = aggression_level(view_row)
 
@@ -640,9 +701,13 @@ if page == "Race HUD":
     if bool(view_row.get("is_sc_lap", False)):
         st.error("🟡 SAFETY CAR LAP – field bunched, reduced wear & fuel.")
     if risk > 0.6:
-        st.error(f"🟥 Critical | {risk*100:.1f}% — SC deployment likely, reduce curb load & aggression!")
+        st.error(
+            f"🟥 Critical | {risk*100:.1f}% — SC deployment likely, reduce curb load & aggression!"
+        )
     elif risk > 0.35:
-        st.warning(f"🟧 Elevated | {risk*100:.1f}% — watch tire integrity, fuel and track limits.")
+        st.warning(
+            f"🟧 Elevated | {risk*100:.1f}% — watch tire integrity, fuel and track limits."
+        )
     else:
         st.success(f"🟩 Low | {risk*100:.1f}% — stable phase, no SC expected soon.")
 
@@ -650,16 +715,16 @@ if page == "Race HUD":
     st.markdown("### ⚡ Driver Attack Mode")
     att_col1, att_col2 = st.columns([4, 1])
     with att_col1:
-        bar_len = int(view_attack // 5)           # 0–20 blocks
+        bar_len = int(view_attack // 5)  # 0–20 blocks
         green_len = min(bar_len, 12)
         yellow_len = max(min(bar_len - 12, 4), 0)
         red_len = max(bar_len - 16, 0)
 
         bar = (
-            "🟩" * green_len +
-            "🟨" * yellow_len +
-            "🟥" * red_len +
-            "▫️" * (20 - bar_len)
+            "🟩" * green_len
+            + "🟨" * yellow_len
+            + "🟥" * red_len
+            + "▫️" * (20 - bar_len)
         )
         st.write(f"`{bar}`  **{view_attack:.0f}/100**")
 
@@ -710,7 +775,6 @@ if page == "Race HUD":
 
     def tire_html(label: str, temp: float, psi: float, health: float, color: str) -> str:
         tooltip = f"{label}: {temp:.1f}°C • {psi:.1f} psi • {health:.1f}% health"
-        # all HTML kept inside this string so nothing leaks
         return f"""
 <div style='text-align:center;' title="{tooltip}">
   <div style="
@@ -786,7 +850,9 @@ if page == "Race HUD":
         elif temp > 105:
             alerts.append(f"{label} tire overheating ({temp:.1f}°C) – manage pace.")
         if health < 35:
-            alerts.append(f"{label} tire very low health ({health:.1f}%) – nearing cliff.")
+            alerts.append(
+                f"{label} tire very low health ({health:.1f}%) – nearing cliff."
+            )
 
     if alerts:
         st.markdown("#### ⚠ Tire & Grip Alerts")
@@ -796,10 +862,9 @@ if page == "Race HUD":
         st.markdown("#### ✅ Tires in acceptable window")
         st.info("All four tires are within safe temperature and health ranges.")
 
-        # ================================
+    # ================================
     # ROAD AMERICA TRACK MAP SECTION
     # ================================
-    import random
     st.markdown("### 🗺 Race Map View (Prototype)")
     gps_mode = st.checkbox("Enable GPS Layout Mode", value=True)
 
@@ -811,8 +876,7 @@ if page == "Race HUD":
         s1=s1,
         s2=s2,
         s3=s3,
-)
-
+    )
     st.markdown(track_html, unsafe_allow_html=True)
 
 # -------------------------------------------------
@@ -867,7 +931,10 @@ elif page == "Telemetry & Driver":
     tcol1, tcol2, tcol3 = st.columns(3)
     tcol1.metric("Throttle Avg (%)", f"{current_row['throttle_pct']:.0f}")
     tcol2.metric("Brake Avg (%)", f"{current_row['brake_pct']:.0f}")
-    tcol3.metric("G-Forces Lat/Long", f"{current_row['g_lat']:.1f} / {current_row['g_long']:.1f}")
+    tcol3.metric(
+        "G-Forces Lat/Long",
+        f"{current_row['g_lat']:.1f} / {current_row['g_long']:.1f}",
+    )
 
     c1, c2 = st.columns(2)
     with c1:
