@@ -32,24 +32,33 @@ st.markdown(
 # GLOBAL CONFIG
 # -------------------------------------------------
 MAX_LAPS = 30
-BASE_PACE = 100.0          # seconds, "fresh tire" pace
+BASE_PACE = 100.0          # sec, baseline lap time
 WEAR_PER_LAP = 3.5         # % tire wear per lap
-PACE_PER_WEAR = 0.22       # sec lost per 1% wear
-FUEL_STINT_LAPS = 20       # starting fuel in laps
+PACE_PER_WEAR = 0.22       # sec of pace loss per 1% wear
 
-# psi and temp ranges
+FUEL_STINT_LAPS = 20       # how many laps a full tank can do
+FUEL_PERCENT_PER_LAP = 100.0 / FUEL_STINT_LAPS
+
 BASE_PRESSURE_PSI = 24.0
 PRESSURE_NOISE = 0.7
-TEMP_BASE = 80.0      # °C
-TEMP_WEAR_GAIN = 0.5  # extra °C per 1% wear
+
+TEMP_BASE = 80.0           # °C
+TEMP_WEAR_GAIN = 0.5       # extra °C per 1% wear
 TEMP_NOISE = 3.0
 
-# rng for synthetic simulation
 RNG = np.random.default_rng(42)
 
+# -------------------------------------------------
+# RESET OLD INCOMPATIBLE STATE (e.g. missing fuel column)
+# -------------------------------------------------
+if "history" in st.session_state:
+    cols = list(st.session_state["history"].columns)
+    # if we don't have fuel_percent column, wipe state and start clean
+    if "fuel_percent" not in cols:
+        st.session_state.clear()
 
 # -------------------------------------------------
-# STATE INIT
+# INIT STATE
 # -------------------------------------------------
 if "history" not in st.session_state:
     st.session_state.history = pd.DataFrame(
@@ -57,29 +66,34 @@ if "history" not in st.session_state:
             "lap",
             "lap_time",
             "tire_remaining",
-            "fuel_laps_left",
-            # tire pressures (psi)
-            "fl_psi", "fr_psi", "rl_psi", "rr_psi",
-            # tire surface temps (°C)
-            "fl_temp", "fr_temp", "rl_temp", "rr_temp",
-            # driver inputs
-            "throttle_pct", "brake_pct",
-            # g-forces
-            "g_lat", "g_long",
-            # sector stress
-            "s1_stress", "s2_stress", "s3_stress",
+            "fuel_percent",
+            "fl_psi",
+            "fr_psi",
+            "rl_psi",
+            "rr_psi",
+            "fl_temp",
+            "fr_temp",
+            "rl_temp",
+            "rr_temp",
+            "throttle_pct",
+            "brake_pct",
+            "g_lat",
+            "g_long",
+            "s1_stress",
+            "s2_stress",
+            "s3_stress",
         ]
     )
     st.session_state.current_lap = 0
     st.session_state.tire_remaining = 100.0
-    st.session_state.fuel_laps_left = FUEL_STINT_LAPS
+    st.session_state.fuel_percent = 100.0
 
 
 # -------------------------------------------------
 # SIMULATION HELPERS
 # -------------------------------------------------
 def simulate_next_lap() -> dict:
-    """Generate a realistic-looking next lap sample."""
+    """Generate the next lap with realistic-looking telemetry."""
     prev_lap = st.session_state.current_lap
     lap = prev_lap + 1
 
@@ -89,37 +103,39 @@ def simulate_next_lap() -> dict:
         0.0, st.session_state.tire_remaining - WEAR_PER_LAP + wear_variation
     )
 
-    # Fuel
-    fuel_laps_left = max(0.0, st.session_state.fuel_laps_left - 1)
+    # Fuel % usage
+    fuel_percent = max(
+        0.0, st.session_state.fuel_percent - FUEL_PERCENT_PER_LAP
+    )
 
-    # Driver inputs (throttle / brake)
+    # Driver inputs
     throttle = np.clip(RNG.normal(0.75, 0.1), 0.3, 1.0)  # 0–1
     brake = np.clip(RNG.normal(0.35, 0.1), 0.05, 1.0)
 
-    # Pace model: slower as tire wears, slightly influenced by driver smoothness
+    # Pace model
     degradation = (100.0 - tire_remaining) * PACE_PER_WEAR
-    smoothness_factor = (1.1 - throttle + 0.3 * brake)  # rough idea
+    smoothness_factor = (1.1 - throttle + 0.3 * brake)
     noise = RNG.normal(0, 0.5)
     lap_time = BASE_PACE + degradation * smoothness_factor + noise
 
-    # Tire temps based on tire wear + brake usage
+    # Tire temps
     base_temp = TEMP_BASE + (100.0 - tire_remaining) * TEMP_WEAR_GAIN
     fl_temp = base_temp + RNG.normal(0, TEMP_NOISE) + brake * 10
     fr_temp = base_temp + RNG.normal(0, TEMP_NOISE) + brake * 11
     rl_temp = base_temp - 5 + RNG.normal(0, TEMP_NOISE) + throttle * 4
     rr_temp = base_temp - 3 + RNG.normal(0, TEMP_NOISE) + throttle * 5
 
-    # Tire pressures (psi). Slight drift as tire heats / wears.
+    # Tire pressures (psi)
     fl_psi = BASE_PRESSURE_PSI + RNG.normal(0, PRESSURE_NOISE) + (fl_temp - TEMP_BASE) * 0.02
     fr_psi = BASE_PRESSURE_PSI + RNG.normal(0, PRESSURE_NOISE) + (fr_temp - TEMP_BASE) * 0.02
     rl_psi = BASE_PRESSURE_PSI - 0.5 + RNG.normal(0, PRESSURE_NOISE) + (rl_temp - TEMP_BASE) * 0.015
     rr_psi = BASE_PRESSURE_PSI - 0.3 + RNG.normal(0, PRESSURE_NOISE) + (rr_temp - TEMP_BASE) * 0.015
 
-    # Very simple G-force approximation
+    # G-forces
     g_lat = np.clip(RNG.normal(1.4, 0.15), 0.8, 2.5)
     g_long = np.clip(RNG.normal(1.1, 0.12), 0.6, 2.0)
 
-    # Sector stress 0–1
+    # Sector stress
     s1_stress = np.clip(0.4 + brake * 0.8 + (100 - tire_remaining) / 200, 0, 1)
     s2_stress = np.clip(0.3 + throttle * 0.5 + g_lat / 4, 0, 1)
     s3_stress = np.clip(0.5 + throttle * 0.6 + (100 - tire_remaining) / 230, 0, 1)
@@ -128,7 +144,7 @@ def simulate_next_lap() -> dict:
         lap=lap,
         lap_time=lap_time,
         tire_remaining=tire_remaining,
-        fuel_laps_left=fuel_laps_left,
+        fuel_percent=fuel_percent,
         fl_psi=fl_psi,
         fr_psi=fr_psi,
         rl_psi=rl_psi,
@@ -152,7 +168,7 @@ def ensure_laps_upto(target_lap: int):
         row = simulate_next_lap()
         st.session_state.current_lap = int(row["lap"])
         st.session_state.tire_remaining = float(row["tire_remaining"])
-        st.session_state.fuel_laps_left = float(row["fuel_laps_left"])
+        st.session_state.fuel_percent = float(row["fuel_percent"])
         st.session_state.history = pd.concat(
             [st.session_state.history, pd.DataFrame([row])],
             ignore_index=True,
@@ -160,24 +176,26 @@ def ensure_laps_upto(target_lap: int):
 
 
 def predict_future(current_row: pd.Series):
-    """Project future laps (for pit window + under/overcut)."""
+    """Project future laps from current telemetry."""
     laps = []
     lap = int(current_row["lap"])
     tire = float(current_row["tire_remaining"])
-    fuel = float(current_row["fuel_laps_left"])
+    fuel_pct = float(current_row["fuel_percent"])
     pace = float(current_row["lap_time"])
 
-    while lap < MAX_LAPS and fuel > 0:
+    while lap < MAX_LAPS and fuel_pct > 0:
         lap += 1
         tire = max(0.0, tire - WEAR_PER_LAP)
-        fuel = max(0.0, fuel - 1)
+        fuel_pct = max(0.0, fuel_pct - FUEL_PERCENT_PER_LAP)
         degradation = (100.0 - tire) * PACE_PER_WEAR
         pace = BASE_PACE + degradation
+        fuel_laps_left = fuel_pct / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
         laps.append(
             {
                 "lap": lap,
                 "tire_remaining": tire,
-                "fuel_laps_left": fuel,
+                "fuel_percent": fuel_pct,
+                "fuel_laps_left": fuel_laps_left,
                 "pace": pace,
             }
         )
@@ -186,9 +204,7 @@ def predict_future(current_row: pd.Series):
 
 
 def pick_pit_window(future_df: pd.DataFrame):
-    """
-    Pit window: tire 30–45% and fuel >= 2 laps.
-    """
+    """Pick pit window using tire life + fuel."""
     if future_df.empty:
         return None, None
 
@@ -197,15 +213,15 @@ def pick_pit_window(future_df: pd.DataFrame):
         & (future_df["tire_remaining"] >= 30)
         & (future_df["fuel_laps_left"] >= 2)
     ]
+
     if window.empty:
-        # fallback: first lap where tire < 50 or fuel <= 3
         window = future_df[
             (future_df["tire_remaining"] <= 50) | (future_df["fuel_laps_left"] <= 3)
         ]
+
     if window.empty:
         return None, None
 
-    # choose lap with best (lowest) pace within that window
     best_row = window.sort_values("pace").iloc[0]
     pit_lap = int(best_row["lap"])
     return max(pit_lap - 1, 1), min(pit_lap + 1, MAX_LAPS)
@@ -218,13 +234,12 @@ def under_overcut_compare(current_lap: int, pit_lap: int, future_df: pd.DataFram
     early = max(pit_lap - 1, current_lap + 1)
     late = min(pit_lap + 1, MAX_LAPS - 1)
 
-    def stint_cost(pit_lap_: int):
+    def stint_cost(pit_lap_):
         horizon = min(pit_lap_ + 5, MAX_LAPS)
         df = future_df[future_df["lap"] <= horizon]
 
         before = df[df["lap"] < pit_lap_]["pace"].sum()
 
-        # After pit: reset tire & fuel
         after_tire = 100.0
         after = 0.0
         for _ in range(pit_lap_, horizon + 1):
@@ -235,7 +250,7 @@ def under_overcut_compare(current_lap: int, pit_lap: int, future_df: pd.DataFram
 
     early_cost = stint_cost(early)
     late_cost = stint_cost(late)
-    gain = late_cost - early_cost  # positive → early better
+    gain = late_cost - early_cost
     return dict(early_lap=early, late_lap=late, gain_seconds=gain)
 
 
@@ -245,13 +260,13 @@ def driver_consistency_score(hist: pd.DataFrame):
     std = hist["lap_time"].std()
     score = max(0, 100 - std * 10)
     if score > 85:
-        txt = "Super consistent – perfect for long stints ✅"
+        txt = "Super consistent – ideal for long stints ✅"
     elif score > 70:
         txt = "Good consistency – small optimizations possible 👍"
     elif score > 50:
-        txt = "Aggressive / variable – might hurt tire life ⚠️"
+        txt = "Aggressive / variable – may hurt tire life ⚠️"
     else:
-        txt = "Highly inconsistent – risky for race stints ❌"
+        txt = "Highly inconsistent – risky for race pace ❌"
     return int(score), txt
 
 
@@ -266,17 +281,15 @@ def sector_heat(hist: pd.DataFrame):
 
 
 # -------------------------------------------------
-# SIDEBAR CONTROLS
+# SIDEBAR
 # -------------------------------------------------
 st.sidebar.title("GR Strategist Lite")
 car = st.sidebar.selectbox("Car", ["GR86-035 Demo", "GR86-047 Demo"])
 target_lap = st.sidebar.slider("Simulate laps up to", 5, MAX_LAPS, 15)
 
 if st.sidebar.button("Reset stint"):
-    st.session_state.history = pd.DataFrame(columns=st.session_state.history.columns)
-    st.session_state.current_lap = 0
-    st.session_state.tire_remaining = 100.0
-    st.session_state.fuel_laps_left = FUEL_STINT_LAPS
+    st.session_state.clear()
+    st.experimental_rerun()
 
 ensure_laps_upto(target_lap)
 hist = st.session_state.history.copy()
@@ -288,15 +301,16 @@ if hist.empty:
 current_row = hist.iloc[-1]
 current_lap = int(current_row["lap"])
 current_tire = float(current_row["tire_remaining"])
-current_fuel = float(current_row["fuel_laps_left"])
+fuel_percent = float(current_row["fuel_percent"])
+fuel_laps_left = fuel_percent / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
 current_lap_time = float(current_row["lap_time"])
 
 future = predict_future(current_row)
 pit_start, pit_end = pick_pit_window(future)
-pit_lap_center = None
+pit_center = None
 if pit_start is not None and pit_end is not None:
-    pit_lap_center = (pit_start + pit_end) // 2
-uo = under_overcut_compare(current_lap, pit_lap_center, future)
+    pit_center = (pit_start + pit_end) // 2
+uo = under_overcut_compare(current_lap, pit_center, future)
 cons_score, cons_text = driver_consistency_score(hist)
 s1, s2, s3 = sector_heat(hist)
 
@@ -304,35 +318,36 @@ s1, s2, s3 = sector_heat(hist)
 # TOP METRICS
 # -------------------------------------------------
 st.title("🏁 GR Strategist Lite — Real-Time Pit Strategy Assistant")
-st.caption(f"{car} • Synthetic GR Cup stint • Up to {MAX_LAPS} laps")
+st.caption(f"{car} • synthetic GR Cup stint • up to {MAX_LAPS} laps")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Current Lap", current_lap)
 m2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
-m3.metric("Tire Remaining", f"{current_tire:.1f}%")
-m4.metric("Fuel Laps Left", f"{current_fuel:.1f}")
+m3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
+m4.metric("Fuel Remaining (%)", f"{fuel_percent:.1f}")
 
-st.write(f"**Driver consistency:** {cons_score}/100 – {cons_text}")
+st.write(
+    f"**Estimated fuel laps left:** ~{fuel_laps_left:.1f} laps  •  "
+    f"**Driver consistency:** {cons_score}/100 – {cons_text}"
+)
 
 # -------------------------------------------------
-# MAIN CHARTS
+# LAP + TIRE CHARTS
 # -------------------------------------------------
 c1, c2 = st.columns(2)
 with c1:
     st.subheader("Lap Time Trend")
     st.line_chart(hist.set_index("lap")["lap_time"])
-
 with c2:
     st.subheader("Tire Wear vs Laps")
     st.line_chart(hist.set_index("lap")["tire_remaining"])
 
 # -------------------------------------------------
-# TIRE & TELEMETRY MODULE
+# TIRE PSI / TEMPERATURE / INPUTS
 # -------------------------------------------------
 st.markdown("---")
 st.subheader("🛞 Tire & Telemetry Snapshot")
 
-# Tire corner metrics
 t1, t2, t3, t4 = st.columns(4)
 t1.metric("FL Pressure (psi)", f"{current_row['fl_psi']:.1f}")
 t2.metric("FR Pressure (psi)", f"{current_row['fr_psi']:.1f}")
@@ -345,11 +360,13 @@ u2.metric("FR Temp (°C)", f"{current_row['fr_temp']:.1f}")
 u3.metric("RL Temp (°C)", f"{current_row['rl_temp']:.1f}")
 u4.metric("RR Temp (°C)", f"{current_row['rr_temp']:.1f}")
 
-# Throttle / Brake / G-forces
 tb1, tb2, tb3 = st.columns(3)
 tb1.metric("Throttle Avg (%)", f"{current_row['throttle_pct']:.0f}")
 tb2.metric("Brake Avg (%)", f"{current_row['brake_pct']:.0f}")
-tb3.metric("G-Forces (Lat / Long)", f"{current_row['g_lat']:.1f} / {current_row['g_long']:.1f}")
+tb3.metric(
+    "G-Forces (Lat / Long)",
+    f"{current_row['g_lat']:.1f} / {current_row['g_long']:.1f}",
+)
 
 # -------------------------------------------------
 # STRATEGY ENGINE
@@ -362,7 +379,7 @@ if pit_start is None:
 else:
     st.write(
         f"🔍 **Recommended pit window:** laps **{pit_start}–{pit_end}** "
-        f"(balancing tire life, pace and remaining fuel)."
+        f"(balanced between tire life, pace and remaining fuel)."
     )
     if uo:
         gain = uo["gain_seconds"]
@@ -371,7 +388,7 @@ else:
         if gain > 0:
             st.success(
                 f"📈 Undercut advantage: pitting on **lap {early}** is estimated "
-                f"~**{gain:.1f}s faster** over the next stint than staying out until lap {late}."
+                f"~**{gain:.1f}s faster** than staying out until lap {late}."
             )
         elif gain < 0:
             st.warning(
@@ -379,7 +396,7 @@ else:
                 f"~**{abs(gain):.1f}s faster** than pitting early on lap {early}."
             )
         else:
-            st.info("⚖️ Under vs overcut are roughly equivalent for the next stint horizon.")
+            st.info("⚖️ Under vs overcut are roughly equivalent over the next stint.")
 
 # -------------------------------------------------
 # ALERTS
@@ -399,17 +416,17 @@ overheated = (
     or current_row["rl_temp"] > 115
     or current_row["rr_temp"] > 115
 )
-low_fuel = current_fuel <= 3
+low_fuel = fuel_laps_left <= 3 or fuel_percent < 15
 
 if low_pressure:
     st.error("🟥 Tire pressure critical – possible slow puncture. **PIT NOW**.")
 if overheated:
-    st.warning("🟧 Tire temperatures very high – back off or PIT soon.")
+    st.warning("🟧 Tire temps very high – manage pace or pit soon.")
 if low_fuel:
-    st.error("⛽ Fuel critically low – **pit within next 1–2 laps**.")
+    st.error("⛽ Fuel critically low – plan to **pit within 1–2 laps**.")
 
 if not (low_pressure or overheated or low_fuel):
-    st.success("✅ No critical issues – car is healthy. Free to extend stint.")
+    st.success("✅ No critical issues – car healthy. Free to extend the stint.")
 
 # -------------------------------------------------
 # TRACK HEAT MAP
