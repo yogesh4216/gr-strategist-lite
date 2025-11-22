@@ -231,6 +231,122 @@ def ai_pit_advice(current_lap: int,
 
 
 # -------------------------------------------------
+# TRACK MAP HELPERS (Road America schematic)
+# -------------------------------------------------
+def get_track_polyline(gps_mode: bool):
+    """
+    Returns a schematic polyline of Road America in normalized coordinates (0–100).
+    gps_mode=True is a slightly more 'GPS-like' layout – later can be replaced
+    with real lat/long from VBOX data.
+    """
+    # Basic hand-tuned outline – shaped roughly like Road America
+    base_pts = [
+        (10, 10),  (30, 8),  (55, 10), (75, 20),  # main straight + T1/T3
+        (85, 30),  (88, 45), (80, 60), (65, 70),  # carousel area
+        (45, 78),  (30, 72), (20, 60), (15, 45),  # kink and mid-field
+        (12, 30),  (10, 18), (10, 10),            # back to start/finish
+    ]
+
+    if gps_mode:
+        # Slightly stretched vertically to look more like lat/long projection
+        return [(x, 5 + 1.15 * (y - 5)) for (x, y) in base_pts]
+    else:
+        return base_pts
+
+
+def build_track_map_html(view_lap: int,
+                         view_row: pd.Series,
+                         gps_mode: bool,
+                         s1: float,
+                         s2: float,
+                         s3: float) -> str:
+    """
+    Builds an inline SVG mini-map of Road America:
+    - Polyline track
+    - Pit lane entry/exit (fixed region near start/finish)
+    - F1-style car dot with number "86"
+    - SC incident marker (⚠) on highest-stress sector when SC is active
+    """
+    pts = get_track_polyline(gps_mode)
+    n_pts = len(pts)
+
+    # Map lap -> index along track (playback "replay" around the lap)
+    car_idx = (view_lap - 1) % n_pts
+    car_x, car_y = pts[car_idx]
+
+    # Build polyline points string
+    poly_str = " ".join(f"{x},{y}" for x, y in pts)
+
+    # Sector indices for incident placement (rough mapping)
+    sector_map = {
+        0: int(n_pts * 0.20),  # S1
+        1: int(n_pts * 0.55),  # S2
+        2: int(n_pts * 0.80),  # S3
+    }
+
+    # Incident marker if this is a Safety Car lap
+    incident_svg = ""
+    if bool(view_row.get("is_sc_lap", False)):
+        stresses = np.array([s1, s2, s3])
+        sec_idx = int(np.argmax(stresses))
+        inc_idx = sector_map.get(sec_idx, car_idx)
+        ix, iy = pts[inc_idx]
+        incident_svg = f"""
+      <g>
+        <circle cx="{ix}" cy="{iy}" r="3" fill="#FFEB3B" stroke="#000" stroke-width="0.5"></circle>
+        <text x="{ix}" y="{iy+1.4}" text-anchor="middle"
+              font-size="3.2" font-weight="bold" fill="#000">⚠</text>
+      </g>
+"""
+
+    # Pit lane region – static box near start/finish (future: distance-based)
+    pit_x1, pit_y1 = 6, 6
+    pit_w, pit_h = 10, 6
+
+    gps_label = "GPS layout (normalized lat/long)" if gps_mode else "Schematic circuit layout"
+
+    svg = f"""
+<div style="margin-top:8px; display:flex; flex-direction:column; align-items:center;">
+  <div style="font-size:13px;color:#bbb;margin-bottom:6px;">
+    Road America – Live Car Tracker • {gps_label}
+  </div>
+  <svg width="520" height="320" viewBox="0 0 100 80" style="background:#05060B;border-radius:12px;border:1px solid #222;">
+    <!-- Track outline -->
+    <polyline points="{poly_str}"
+              fill="none"
+              stroke="#888"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round" />
+
+    <!-- Pit lane (entry/exit near start/finish) -->
+    <rect x="{pit_x1}" y="{pit_y1}" width="{pit_w}" height="{pit_h}"
+          fill="rgba(255,255,255,0.03)" stroke="#FF9100" stroke-width="0.7" />
+    <text x="{pit_x1 + pit_w/2}" y="{pit_y1 - 1.5}" text-anchor="middle"
+          font-size="3" fill="#FFB74D">PIT</text>
+
+    <!-- Car marker: F1-style dot with number 86 -->
+    <circle cx="{car_x}" cy="{car_y}" r="2.6"
+            fill="#00E676" stroke="#FFFFFF" stroke-width="0.6" />
+    <text x="{car_x}" y="{car_y + 1.0}" text-anchor="middle"
+          font-size="3.0" fill="#111" font-weight="bold">86</text>
+
+    <!-- Start/finish line -->
+    <line x1="10" y1="9" x2="10" y2="13" stroke="#FFFFFF" stroke-width="0.7" />
+    <text x="12" y="15" font-size="2.8" fill="#ccc">S/F</text>
+
+    <!-- Incident marker (SC) -->
+    {incident_svg}
+  </svg>
+  <div style="font-size:11px;color:#777;margin-top:4px;">
+    Dot moves around the circuit as you scrub laps • Incident marker shows likely SC zone.
+  </div>
+</div>
+"""
+    return svg
+
+
+# -------------------------------------------------
 # SIMULATION HELPERS (include Safety Car logic)
 # -------------------------------------------------
 def simulate_next_lap() -> dict:
@@ -653,7 +769,7 @@ if page == "Race HUD":
     {tire_html("RL", rl_temp, rl_psi, rl_health, rl_col)}
     {tire_html("RR", rr_temp, rr_psi, rr_health, rr_col)}
   </div>
- </div>
+</div>
 """
 
     st.markdown(heatmap_html, unsafe_allow_html=True)
@@ -679,6 +795,29 @@ if page == "Race HUD":
     else:
         st.markdown("#### ✅ Tires in acceptable window")
         st.info("All four tires are within safe temperature and health ranges.")
+
+    # ================================
+    # ROAD AMERICA TRACK MAP SECTION
+    # ================================
+    st.markdown("---")
+    st.subheader("🗺 Road America Map Tracking (Prototype)")
+
+    gps_mode = st.checkbox(
+        "🛰 GPS layout mode",
+        value=False,
+        help="Demo toggle: schematic vs GPS-style layout. "
+             "Real VBOX lat/long from Road America can be wired in later."
+    )
+
+    map_html = build_track_map_html(
+        view_lap=view_lap,
+        view_row=view_row,
+        gps_mode=gps_mode,
+        s1=s1,
+        s2=s2,
+        s3=s3,
+    )
+    st.markdown(map_html, unsafe_allow_html=True)
 
     st.markdown("---")
     c1, c2 = st.columns(2)
