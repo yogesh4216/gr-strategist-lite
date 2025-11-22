@@ -11,7 +11,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Simple dark styling
 st.markdown(
     """
     <style>
@@ -37,14 +36,14 @@ BASE_PACE = 100.0          # sec, baseline lap time
 WEAR_PER_LAP = 3.5         # % tire wear per lap
 PACE_PER_WEAR = 0.22       # sec of pace loss per 1% wear
 
-FUEL_STINT_LAPS = 20       # how many laps a full tank can do
+FUEL_STINT_LAPS = 20
 FUEL_PERCENT_PER_LAP = 100.0 / FUEL_STINT_LAPS
 
 BASE_PRESSURE_PSI = 24.0
 PRESSURE_NOISE = 0.7
 
 TEMP_BASE = 80.0           # °C
-TEMP_WEAR_GAIN = 0.5       # extra °C per 1% wear
+TEMP_WEAR_GAIN = 0.5
 TEMP_NOISE = 3.0
 
 RNG = np.random.default_rng(42)
@@ -97,45 +96,37 @@ def simulate_next_lap() -> dict:
     prev_lap = st.session_state.current_lap
     lap = prev_lap + 1
 
-    # Tire wear
     wear_variation = RNG.normal(0, 0.8)
     tire_remaining = max(
         0.0, st.session_state.tire_remaining - WEAR_PER_LAP + wear_variation
     )
 
-    # Fuel % usage
     fuel_percent = max(
         0.0, st.session_state.fuel_percent - FUEL_PERCENT_PER_LAP
     )
 
-    # Driver inputs
-    throttle = np.clip(RNG.normal(0.75, 0.1), 0.3, 1.0)  # 0–1
+    throttle = np.clip(RNG.normal(0.75, 0.1), 0.3, 1.0)
     brake = np.clip(RNG.normal(0.35, 0.1), 0.05, 1.0)
 
-    # Pace model
     degradation = (100.0 - tire_remaining) * PACE_PER_WEAR
     smoothness_factor = (1.1 - throttle + 0.3 * brake)
     noise = RNG.normal(0, 0.5)
     lap_time = BASE_PACE + degradation * smoothness_factor + noise
 
-    # Tire temps
     base_temp = TEMP_BASE + (100.0 - tire_remaining) * TEMP_WEAR_GAIN
     fl_temp = base_temp + RNG.normal(0, TEMP_NOISE) + brake * 10
     fr_temp = base_temp + RNG.normal(0, TEMP_NOISE) + brake * 11
     rl_temp = base_temp - 5 + RNG.normal(0, TEMP_NOISE) + throttle * 4
     rr_temp = base_temp - 3 + RNG.normal(0, TEMP_NOISE) + throttle * 5
 
-    # Tire pressures (psi)
     fl_psi = BASE_PRESSURE_PSI + RNG.normal(0, PRESSURE_NOISE) + (fl_temp - TEMP_BASE) * 0.02
     fr_psi = BASE_PRESSURE_PSI + RNG.normal(0, PRESSURE_NOISE) + (fr_temp - TEMP_BASE) * 0.02
     rl_psi = BASE_PRESSURE_PSI - 0.5 + RNG.normal(0, PRESSURE_NOISE) + (rl_temp - TEMP_BASE) * 0.015
     rr_psi = BASE_PRESSURE_PSI - 0.3 + RNG.normal(0, PRESSURE_NOISE) + (rr_temp - TEMP_BASE) * 0.015
 
-    # G-forces
     g_lat = np.clip(RNG.normal(1.4, 0.15), 0.8, 2.5)
     g_long = np.clip(RNG.normal(1.1, 0.12), 0.6, 2.0)
 
-    # Sector stress
     s1_stress = np.clip(0.4 + brake * 0.8 + (100 - tire_remaining) / 200, 0, 1)
     s2_stress = np.clip(0.3 + throttle * 0.5 + g_lat / 4, 0, 1)
     s3_stress = np.clip(0.5 + throttle * 0.6 + (100 - tire_remaining) / 230, 0, 1)
@@ -281,29 +272,9 @@ def sector_heat(hist: pd.DataFrame):
 
 
 def aggression_level(row: pd.Series) -> float:
-    """0–100 attack score based on throttle, brake, g-forces."""
     base = 0.5 * (row["throttle_pct"] / 100) + 0.3 * (row["brake_pct"] / 100)
     base += 0.2 * (row["g_lat"] / 2.0)
     return float(np.clip(base * 100, 0, 100))
-
-
-def colored_value(val, low_ok=True, unit=""):
-    """Return a text with emoji color style based on thresholds."""
-    if low_ok:
-        if val < 30:
-            icon = "🟢"
-        elif val < 60:
-            icon = "🟡"
-        else:
-            icon = "🟥"
-    else:
-        if val < 40:
-            icon = "🟥"
-        elif val < 60:
-            icon = "🟡"
-        else:
-            icon = "🟢"
-    return f"{icon} {val:.1f}{unit}"
 
 
 def ai_pit_advice(current_lap: int,
@@ -321,7 +292,6 @@ def ai_pit_advice(current_lap: int,
     """
     messages = []
 
-    # Fuel logic
     if fuel_laps_left <= 1.5:
         messages.append((
             3, "critical", "Fuel critical",
@@ -333,7 +303,6 @@ def ai_pit_advice(current_lap: int,
             f"⛽ Fuel getting low (~{fuel_laps_left:.1f} laps left). Plan to pit in the next 1–2 laps."
         ))
 
-    # Tire logic
     if current_tire <= 25:
         messages.append((
             3, "critical", "Tire cliff incoming",
@@ -345,7 +314,6 @@ def ai_pit_advice(current_lap: int,
             f"🛞 Tire life {current_tire:.1f}% – you're approaching the drop-off zone."
         ))
 
-    # Undercut / overcut logic
     if uo is not None:
         gain = uo["gain_seconds"]
         early = uo["early_lap"]
@@ -361,7 +329,6 @@ def ai_pit_advice(current_lap: int,
                 f"📈 Undercut on lap {early} is ~{gain:.1f}s faster than pitting later."
             ))
 
-    # If in recommended pit window, push advice
     if (pit_start is not None) and (pit_end is not None):
         if pit_start <= current_lap <= pit_end:
             messages.append((
@@ -373,7 +340,6 @@ def ai_pit_advice(current_lap: int,
     if not messages:
         return ("ok", "Stay out", "✅ Tires and fuel are within a comfortable range. Stay out and manage pace.")
 
-    # Pick highest priority (3 critical > 2 warn > 1 info)
     messages.sort(key=lambda x: x[0], reverse=True)
     _, level, title, msg = messages[0]
     return (level, title, msg)
@@ -419,7 +385,6 @@ uo = under_overcut_compare(current_lap, pit_center, future)
 cons_score, cons_text = driver_consistency_score(hist)
 s1, s2, s3 = sector_heat(hist)
 
-# Get AI pit advice (Hybrid mode)
 ai_level, ai_title, ai_message = ai_pit_advice(
     current_lap=current_lap,
     current_tire=current_tire,
@@ -430,20 +395,18 @@ ai_level, ai_title, ai_message = ai_pit_advice(
 )
 
 # -------------------------------------------------
-# PAGE: RACE HUD (with GR86 heat map + AI pit advisor)
+# PAGE: RACE HUD
 # -------------------------------------------------
 if page == "Race HUD":
     st.title("🏁 GR Strategist Lite — Race HUD (Esports Mode)")
     st.caption(f"{car} • synthetic GR Cup stint • up to {MAX_LAPS} laps")
 
-    # ---- Top summary metrics ----
     top1, top2, top3, top4 = st.columns(4)
     top1.metric("Current Lap", current_lap)
     top2.metric("Last Lap Time (s)", f"{current_lap_time:.3f}")
     top3.metric("Tire Remaining (%)", f"{current_tire:.1f}")
     top4.metric("Fuel", f"{fuel_percent:.1f}%  (~{fuel_laps_left:.1f} laps)")
 
-    # ---- AI Pit Advisor banner ----
     st.markdown("### 🎧 AI Pit Engineer")
     if ai_level == "critical":
         st.error(f"**{ai_title}** – {ai_message}")
@@ -452,7 +415,6 @@ if page == "Race HUD":
     else:
         st.success(f"**{ai_title}** – {ai_message}")
 
-    # ---- Driver attack mode (RPM bar + lightning) ----
     st.markdown("### ⚡ Driver Attack Mode")
     att_col1, att_col2 = st.columns([4, 1])
     with att_col1:
@@ -480,24 +442,20 @@ if page == "Race HUD":
     st.markdown("---")
     st.subheader("🚗 Top-Down GR86 Tire Heat Map (psi / temp / health)")
 
-    # ---- Tire health & color helpers ----
     def tire_health(temp: float) -> float:
-        # Global wear minus extra penalty for overheating
         overheat_penalty = max(0, temp - 105) * 0.7
         return float(np.clip(current_tire - overheat_penalty, 0, 100))
 
     def tire_color(temp: float) -> str:
-        # Returns a hex color for the tire fill based on temp bands
         if temp < 85:
-            return "#2196F3"   # blue (cold)
+            return "#2196F3"
         elif temp < 100:
-            return "#00E676"   # green (optimal)
+            return "#00E676"
         elif temp < 115:
-            return "#FF9100"   # orange (hot)
+            return "#FF9100"
         else:
-            return "#FF1744"   # red (critical)
+            return "#FF1744"
 
-    # Current temps / pressures
     fl_temp = float(current_row["fl_temp"])
     fr_temp = float(current_row["fr_temp"])
     rl_temp = float(current_row["rl_temp"])
@@ -508,20 +466,17 @@ if page == "Race HUD":
     rl_psi = float(current_row["rl_psi"])
     rr_psi = float(current_row["rr_psi"])
 
-    # Health values
     fl_health = tire_health(fl_temp)
     fr_health = tire_health(fr_temp)
     rl_health = tire_health(rl_temp)
     rr_health = tire_health(rr_temp)
 
-    # Colors
     fl_col = tire_color(fl_temp)
     fr_col = tire_color(fr_temp)
     rl_col = tire_color(rl_temp)
     rr_col = tire_color(rr_temp)
 
     def tire_html(label: str, temp: float, psi: float, health: float, color: str) -> str:
-        """One tire with tooltip (psi/temp/health)."""
         tooltip = f"{label}: {temp:.1f}°C • {psi:.1f} psi • {health:.1f}% health"
         return f"""
         <div style='text-align:center;' title="{tooltip}">
@@ -539,7 +494,6 @@ if page == "Race HUD":
         </div>
         """
 
-    # GR livery car body (white / red / black)
     car_body_html = """
     <div style="
         width:180px;height:90px;
@@ -568,7 +522,6 @@ if page == "Race HUD":
     </div>
     """
 
-    # Layout: FRONT row + REAR row
     heatmap_html = f"""
     <div style="display:flex;flex-direction:column;align-items:center;gap:18px;margin-top:8px;">
       <div style="font-size:13px;color:#bbb;">FRONT AXLE</div>
@@ -587,9 +540,9 @@ if page == "Race HUD":
     </div>
     """
 
+    # IMPORTANT: this actually renders the HTML
     st.markdown(heatmap_html, unsafe_allow_html=True)
 
-    # ---- Embedded alerts from heat zones ----
     alerts = []
     for label, temp, health in [
         ("FL", fl_temp, fl_health),
@@ -622,7 +575,7 @@ if page == "Race HUD":
         st.line_chart(hist.set_index("lap")["tire_remaining"])
 
 # -------------------------------------------------
-# PAGE: STRATEGY & PIT WINDOW
+# STRATEGY & PIT WINDOW
 # -------------------------------------------------
 elif page == "Strategy & Pit Window":
     st.title("🧠 Strategy & Pit Window")
@@ -662,7 +615,7 @@ elif page == "Strategy & Pit Window":
             st.write("No future data yet.")
 
 # -------------------------------------------------
-# PAGE: TELEMETRY & DRIVER
+# TELEMETRY & DRIVER
 # -------------------------------------------------
 elif page == "Telemetry & Driver":
     st.title("📡 Telemetry & Driver Behaviour")
@@ -687,15 +640,14 @@ elif page == "Telemetry & Driver":
         st.dataframe(hist.reset_index(drop=True))
 
 # -------------------------------------------------
-# PAGE: TRACK & WEATHER
+# TRACK & WEATHER
 # -------------------------------------------------
 elif page == "Track & Weather":
     st.title("🌦 Track & Weather Impact (Prototype)")
     st.caption("Simulated relationship between ambient temp, tire wear and lap time.")
 
-    # Simple synthetic weather model
     laps = hist["lap"].values
-    ambient = 22 + 0.12 * laps  # warm-up during the race
+    ambient = 22 + 0.12 * laps
     track_temp = ambient + 8
 
     weather_df = pd.DataFrame(
@@ -727,7 +679,7 @@ elif page == "Track & Weather":
     )
 
 # -------------------------------------------------
-# PAGE: PIT LOSS TOOL
+# PIT LOSS TOOL
 # -------------------------------------------------
 elif page == "Pit Loss Tool":
     st.title("⛽ Pit Stop Loss & Risk Tool (Prototype)")
