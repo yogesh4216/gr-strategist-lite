@@ -796,82 +796,60 @@ if page == "Race HUD":
         st.markdown("#### ✅ Tires in acceptable window")
         st.info("All four tires are within safe temperature and health ranges.")
 
-    # ================================
+        # ================================
     # ROAD AMERICA TRACK MAP SECTION
     # ================================
-   # =======================
-# TRACK MAP VIEW (GPS MODE)
-# =======================
-import random
+    import random
 
-st.markdown("### 🗺 Race Map View (Prototype)")
+    st.markdown("### 🗺 Race Map View (Prototype)")
+    gps_mode = st.checkbox("Enable GPS Mode (Experimental)", value=True)
 
-gps_mode = st.checkbox("Enable GPS Mode (Experimental)", value=True)
+    lap_norm = min(1.0, view_lap / MAX_LAPS)
+    points_x = [45, 72, 83, 78, 60, 42, 30, 20, 28]
+    points_y = [88, 78, 60, 42, 22, 20, 38, 62, 80]
 
-# Normalize lap index for car position animation
-lap_norm = min(1.0, view_lap / MAX_LAPS)
+    idx = int(lap_norm * (len(points_x) - 1))
+    cx = points_x[idx]
+    cy = points_y[idx]
 
-# Car position around track (simple interpolation)
-# Move clockwise around defined points
-points_x = [45, 72, 83, 78, 60, 42, 30, 20, 28]
-points_y = [88, 78, 60, 42, 22, 20, 38, 62, 80]
+    incident_html = ""
+    if bool(view_row.get("is_sc_lap", False)):
+        incident_html = f"""
+        <circle cx='{cx}' cy='{cy}' r='4'
+            fill='yellow' stroke='#111' stroke-width='1.5'/>
+        <text x='{cx}' y='{cy-6}' text-anchor='middle'
+            font-size='3.5' fill='yellow'>⚠</text>
+        """
 
-idx = int(lap_norm * (len(points_x)-1))
-cx = points_x[idx]
-cy = points_y[idx]
+    svg = f"""
+    <svg viewBox="0 0 100 100" width="400" height="400"
+        style="background:#05060B;border-radius:12px">
+      <polyline points="45,88 72,78 83,60 78,42 60,22 42,20 30,38 20,62 28,80 45,88"
+                fill="none" stroke="#aaa" stroke-width="1.2"/>
 
-# SC Incident marker if safety car on this lap
-incident_html = ""
-if bool(view_row.get("is_sc_lap", False)):
-    incident_html = f"""
-    <circle cx="{cx}" cy="{cy}" r="4"
-        fill="yellow" stroke="#111" stroke-width="1.5"/>
-    <text x="{cx}" y="{cy-6}" text-anchor="middle"
-        font-size="3.5" fill="yellow">⚠</text>
+      <rect x="6" y="6" width="12" height="6"
+            fill="rgba(255,255,255,0.03)" stroke="#FF9100"
+            stroke-width="0.6"/>
+      <text x="12" y="11" font-size="3" fill="#FFB74D"
+            text-anchor="middle">PIT</text>
+
+      <line x1="50" y1="90" x2="50" y2="84"
+            stroke="#fff" stroke-width="0.7"/>
+      <text x="50" y="96" font-size="3" fill="#ccc"
+            text-anchor="middle">S/F</text>
+
+      <circle cx="{cx}" cy="{cy}" r="2.6"
+          fill="#00E676" stroke="#fff" stroke-width="0.6"/>
+      <text x="{cx}" y="{cy-3}" font-size="3"
+          fill="#111" text-anchor="middle"
+          font-weight="bold">86</text>
+
+      {incident_html}
+    </svg>
     """
-
-# FINAL SVG map
-svg = f"""
-<svg viewBox="0 0 100 100" width="400" height="400"
-     style="background:#05060B;border-radius:12px">
-  <!-- Road America Track -->
-  <polyline points="45,88 72,78 83,60 78,42 60,22 42,20 30,38 20,62 28,80 45,88"
-            fill="none" stroke="#aaa" stroke-width="1.2"/>
-
-  <!-- PIT Lane -->
-  <rect x="6" y="6" width="12" height="6"
-        fill="rgba(255,255,255,0.03)" stroke="#FF9100"
-        stroke-width="0.6"/>
-  <text x="12" y="11" font-size="3" fill="#FFB74D"
-        text-anchor="middle">PIT</text>
-
-  <!-- Start/Finish -->
-  <line x1="50" y1="90" x2="50" y2="84"
-        stroke="#fff" stroke-width="0.7"/>
-  <text x="50" y="96" font-size="3" fill="#ccc"
-        text-anchor="middle">S/F</text>
-
-  <!-- Car Marker -->
-  <circle cx="{cx}" cy="{cy}" r="2.6"
-      fill="#00E676" stroke="#fff" stroke-width="0.6"/>
-  <text x="{cx}" y="{cy-3}" font-size="3"
-      fill="#111" text-anchor="middle"
-      font-weight="bold">86</text>
-
-  {incident_html}
-</svg>
-"""
-
-st.markdown(svg, unsafe_allow_html=True))
+    st.markdown(svg, unsafe_allow_html=True)
 
     st.markdown("---")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Lap Time Trend")
-        st.line_chart(hist.set_index("lap")["lap_time"])
-    with c2:
-        st.subheader("Tire Wear vs Laps")
-        st.line_chart(hist.set_index("lap")["tire_remaining"])
 
 # -------------------------------------------------
 # STRATEGY & PIT WINDOW
