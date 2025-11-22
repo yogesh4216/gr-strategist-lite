@@ -81,37 +81,211 @@ if "history" not in st.session_state:
             "s1_stress",
             "s2_stress",
             "s3_stress",
+            "is_sc_lap",
         ]
     )
     st.session_state.current_lap = 0
     st.session_state.tire_remaining = 100.0
     st.session_state.fuel_percent = 100.0
 
+# safety car state
+if "sc_active" not in st.session_state:
+    st.session_state.sc_active = False
+if "sc_laps_remaining" not in st.session_state:
+    st.session_state.sc_laps_remaining = 0
+
 
 # -------------------------------------------------
-# SIMULATION HELPERS
+# ANALYTICS HELPERS
+# -------------------------------------------------
+def driver_consistency_score(hist: pd.DataFrame):
+    if len(hist) < 3:
+        return 100, "Not enough laps yet for consistency analysis."
+    std = hist["lap_time"].std()
+    score = max(0, 100 - std * 10)
+    if score > 85:
+        txt = "Super consistent – ideal for long stints ✅"
+    elif score > 70:
+        txt = "Good consistency – small optimizations possible 👍"
+    elif score > 50:
+        txt = "Aggressive / variable – may hurt tire life ⚠️"
+    else:
+        txt = "Highly inconsistent – risky for race pace ❌"
+    return int(score), txt
+
+
+def sector_heat(hist: pd.DataFrame):
+    if hist.empty:
+        return [0, 0, 0]
+    return [
+        float(hist["s1_stress"].mean()),
+        float(hist["s2_stress"].mean()),
+        float(hist["s3_stress"].mean()),
+    ]
+
+
+def aggression_level(row: pd.Series) -> float:
+    base = 0.5 * (row["throttle_pct"] / 100) + 0.3 * (row["brake_pct"] / 100)
+    base += 0.2 * (row["g_lat"] / 2.0)
+    return float(np.clip(base * 100, 0, 100))
+
+
+def safety_car_probability(row: pd.Series) -> float:
+    """
+    Simple safety car risk model (0–1):
+    - High tire wear
+    - Low fuel
+    - High G-forces
+    - High aggression
+    """
+    risk = 0.0
+
+    # Tire-based risk
+    if row["tire_remaining"] < 40:
+        risk += (40 - row["tire_remaining"]) * 0.015
+
+    # Fuel-based risk
+    if row["fuel_percent"] < 20:
+        risk += (20 - row["fuel_percent"]) * 0.02
+
+    # G-force risk (off-track, spins)
+    if row["g_lat"] > 2.0 or row["g_long"] > 1.8:
+        risk += 0.15
+
+    # Aggression risk
+    aggr = aggression_level(row)
+    if aggr > 80:
+        risk += 0.12
+    elif aggr > 65:
+        risk += 0.06
+
+    return float(np.clip(risk, 0.0, 1.0))
+
+
+def ai_pit_advice(current_lap: int,
+                  current_tire: float,
+                  fuel_laps_left: float,
+                  pit_start,
+                  pit_end,
+                  uo):
+    """
+    Hybrid AI advisor:
+    - Critical if fuel or tires are very low
+    - Warning if in pit window or strong undercut
+    - Otherwise, stay out & manage
+    Returns (level, title, message)
+    """
+    messages = []
+
+    if fuel_laps_left <= 1.5:
+        messages.append((
+            3, "critical", "Fuel critical",
+            f"⛽ Fuel remaining for only ~{fuel_laps_left:.1f} laps. Box this lap or risk running dry."
+        ))
+    elif fuel_laps_left <= 3.0:
+        messages.append((
+            2, "warn", "Fuel window",
+            f"⛽ Fuel getting low (~{fuel_laps_left:.1f} laps left). Plan to pit in the next 1–2 laps."
+        ))
+
+    if current_tire <= 25:
+        messages.append((
+            3, "critical", "Tire cliff incoming",
+            f"🛞 Global tire life at {current_tire:.1f}%. Expect big lap-time drop – pit now or very soon."
+        ))
+    elif current_tire <= 40:
+        messages.append((
+            2, "warn", "High tire wear",
+            f"🛞 Tire life {current_tire:.1f}% – you're approaching the drop-off zone."
+        ))
+
+    if uo is not None:
+        gain = uo["gain_seconds"]
+        early = uo["early_lap"]
+        late = uo["late_lap"]
+        if gain > 5:
+            messages.append((
+                2, "warn", "Strong undercut opportunity",
+                f"📈 Pitting around lap {early} gains ~{gain:.1f}s vs staying to lap {late}."
+            ))
+        elif gain > 2:
+            messages.append((
+                1, "info", "Mild undercut gain",
+                f"📈 Undercut on lap {early} is ~{gain:.1f}s faster than pitting later."
+            ))
+
+    if (pit_start is not None) and (pit_end is not None):
+        if pit_start <= current_lap <= pit_end:
+            messages.append((
+                2, "warn", "Inside ideal pit window",
+                f"🧠 You are inside the recommended pit window (laps {pit_start}-{pit_end}). "
+                "Fresh tyres now will stabilise pace."
+            ))
+
+    if not messages:
+        return ("ok", "Stay out", "✅ Tires and fuel are within a comfortable range. Stay out and manage pace.")
+
+    messages.sort(key=lambda x: x[0], reverse=True)
+    _, level, title, msg = messages[0]
+    return (level, title, msg)
+
+
+# -------------------------------------------------
+# SIMULATION HELPERS (include Safety Car logic)
 # -------------------------------------------------
 def simulate_next_lap() -> dict:
     """Generate the next lap with realistic-looking telemetry."""
     prev_lap = st.session_state.current_lap
     lap = prev_lap + 1
 
+    # --- Auto safety car trigger (A + B) ---
+    if (not st.session_state.sc_active) and len(st.session_state.history) > 0:
+        prev_row = st.session_state.history.iloc[-1]
+        risk = safety_car_probability(prev_row)  # B: risk-based
+        base_chance = 0.02                       # A: small random base
+        chance = base_chance + risk * 0.25
+        if RNG.random() < chance:
+            st.session_state.sc_active = True
+            st.session_state.sc_laps_remaining = int(RNG.integers(2, 5))
+
+    sc_active = st.session_state.sc_active
+
     wear_variation = RNG.normal(0, 0.8)
+
+    # Under SC: softer wear & fuel, slower lap
+    wear_per_lap = WEAR_PER_LAP * (0.35 if sc_active else 1.0)
+    fuel_per_lap = FUEL_PERCENT_PER_LAP * (0.6 if sc_active else 1.0)
+
     tire_remaining = max(
-        0.0, st.session_state.tire_remaining - WEAR_PER_LAP + wear_variation
+        0.0, st.session_state.tire_remaining - wear_per_lap + wear_variation
     )
 
     fuel_percent = max(
-        0.0, st.session_state.fuel_percent - FUEL_PERCENT_PER_LAP
+        0.0, st.session_state.fuel_percent - fuel_per_lap
     )
 
-    throttle = np.clip(RNG.normal(0.75, 0.1), 0.3, 1.0)
-    brake = np.clip(RNG.normal(0.35, 0.1), 0.05, 1.0)
+    if sc_active:
+        throttle_mean = 0.6
+        brake_mean = 0.25
+        g_lat_mean = 1.0
+        g_long_mean = 0.8
+        noise_scale = 0.4
+        sc_time_delta = 18.0
+    else:
+        throttle_mean = 0.75
+        brake_mean = 0.35
+        g_lat_mean = 1.4
+        g_long_mean = 1.1
+        noise_scale = 0.5
+        sc_time_delta = 0.0
+
+    throttle = np.clip(RNG.normal(throttle_mean, 0.1), 0.3, 1.0)
+    brake = np.clip(RNG.normal(brake_mean, 0.1), 0.05, 1.0)
 
     degradation = (100.0 - tire_remaining) * PACE_PER_WEAR
     smoothness_factor = (1.1 - throttle + 0.3 * brake)
-    noise = RNG.normal(0, 0.5)
-    lap_time = BASE_PACE + degradation * smoothness_factor + noise
+    noise = RNG.normal(0, noise_scale)
+    lap_time = BASE_PACE + degradation * smoothness_factor + noise + sc_time_delta
 
     base_temp = TEMP_BASE + (100.0 - tire_remaining) * TEMP_WEAR_GAIN
     fl_temp = base_temp + RNG.normal(0, TEMP_NOISE) + brake * 10
@@ -124,12 +298,18 @@ def simulate_next_lap() -> dict:
     rl_psi = BASE_PRESSURE_PSI - 0.5 + RNG.normal(0, PRESSURE_NOISE) + (rl_temp - TEMP_BASE) * 0.015
     rr_psi = BASE_PRESSURE_PSI - 0.3 + RNG.normal(0, PRESSURE_NOISE) + (rr_temp - TEMP_BASE) * 0.015
 
-    g_lat = np.clip(RNG.normal(1.4, 0.15), 0.8, 2.5)
-    g_long = np.clip(RNG.normal(1.1, 0.12), 0.6, 2.0)
+    g_lat = np.clip(RNG.normal(g_lat_mean, 0.15), 0.8, 2.5)
+    g_long = np.clip(RNG.normal(g_long_mean, 0.12), 0.6, 2.0)
 
     s1_stress = np.clip(0.4 + brake * 0.8 + (100 - tire_remaining) / 200, 0, 1)
     s2_stress = np.clip(0.3 + throttle * 0.5 + g_lat / 4, 0, 1)
     s3_stress = np.clip(0.5 + throttle * 0.6 + (100 - tire_remaining) / 230, 0, 1)
+
+    # SC countdown
+    if sc_active:
+        st.session_state.sc_laps_remaining -= 1
+        if st.session_state.sc_laps_remaining <= 0:
+            st.session_state.sc_active = False
 
     return dict(
         lap=lap,
@@ -151,6 +331,7 @@ def simulate_next_lap() -> dict:
         s1_stress=s1_stress,
         s2_stress=s2_stress,
         s3_stress=s3_stress,
+        is_sc_lap=sc_active,
     )
 
 
@@ -245,141 +426,8 @@ def under_overcut_compare(current_lap: int, pit_lap: int, future_df: pd.DataFram
     return dict(early_lap=early, late_lap=late, gain_seconds=gain)
 
 
-def driver_consistency_score(hist: pd.DataFrame):
-    if len(hist) < 3:
-        return 100, "Not enough laps yet for consistency analysis."
-    std = hist["lap_time"].std()
-    score = max(0, 100 - std * 10)
-    if score > 85:
-        txt = "Super consistent – ideal for long stints ✅"
-    elif score > 70:
-        txt = "Good consistency – small optimizations possible 👍"
-    elif score > 50:
-        txt = "Aggressive / variable – may hurt tire life ⚠️"
-    else:
-        txt = "Highly inconsistent – risky for race pace ❌"
-    return int(score), txt
-
-
-def sector_heat(hist: pd.DataFrame):
-    if hist.empty:
-        return [0, 0, 0]
-    return [
-        float(hist["s1_stress"].mean()),
-        float(hist["s2_stress"].mean()),
-        float(hist["s3_stress"].mean()),
-    ]
-
-
-def aggression_level(row: pd.Series) -> float:
-    base = 0.5 * (row["throttle_pct"] / 100) + 0.3 * (row["brake_pct"] / 100)
-    base += 0.2 * (row["g_lat"] / 2.0)
-    return float(np.clip(base * 100, 0, 100))
-
-
-def ai_pit_advice(current_lap: int,
-                  current_tire: float,
-                  fuel_laps_left: float,
-                  pit_start,
-                  pit_end,
-                  uo):
-    """
-    Hybrid AI advisor:
-    - Critical if fuel or tires are very low
-    - Warning if in pit window or strong undercut
-    - Otherwise, stay out & manage
-    Returns (level, title, message)
-    """
-    messages = []
-
-    if fuel_laps_left <= 1.5:
-        messages.append((
-            3, "critical", "Fuel critical",
-            f"⛽ Fuel remaining for only ~{fuel_laps_left:.1f} laps. Box this lap or risk running dry."
-        ))
-    elif fuel_laps_left <= 3.0:
-        messages.append((
-            2, "warn", "Fuel window",
-            f"⛽ Fuel getting low (~{fuel_laps_left:.1f} laps left). Plan to pit in the next 1–2 laps."
-        ))
-
-    if current_tire <= 25:
-        messages.append((
-            3, "critical", "Tire cliff incoming",
-            f"🛞 Global tire life at {current_tire:.1f}%. Expect big lap-time drop – pit now or very soon."
-        ))
-    elif current_tire <= 40:
-        messages.append((
-            2, "warn", "High tire wear",
-            f"🛞 Tire life {current_tire:.1f}% – you're approaching the drop-off zone."
-        ))
-
-    if uo is not None:
-        gain = uo["gain_seconds"]
-        early = uo["early_lap"]
-        late = uo["late_lap"]
-        if gain > 5:
-            messages.append((
-                2, "warn", "Strong undercut opportunity",
-                f"📈 Pitting around lap {early} gains ~{gain:.1f}s vs staying to lap {late}."
-            ))
-        elif gain > 2:
-            messages.append((
-                1, "info", "Mild undercut gain",
-                f"📈 Undercut on lap {early} is ~{gain:.1f}s faster than pitting later."
-            ))
-
-    if (pit_start is not None) and (pit_end is not None):
-        if pit_start <= current_lap <= pit_end:
-            messages.append((
-                2, "warn", "Inside ideal pit window",
-                f"🧠 You are inside the recommended pit window (laps {pit_start}-{pit_end}). "
-                "Fresh tyres now will stabilise pace."
-            ))
-
-    if not messages:
-        return ("ok", "Stay out", "✅ Tires and fuel are within a comfortable range. Stay out and manage pace.")
-
-    messages.sort(key=lambda x: x[0], reverse=True)
-    _, level, title, msg = messages[0]
-    return (level, title, msg)
-
-
-def safety_car_probability(row: pd.Series) -> float:
-    """
-    Simple safety car risk model:
-    - High tire wear
-    - Low fuel (risk of stoppage)
-    - High G-forces
-    - High aggression
-    Returns probability 0–1.
-    """
-    risk = 0.0
-
-    # Tire-based risk
-    if row["tire_remaining"] < 40:
-        risk += (40 - row["tire_remaining"]) * 0.015
-
-    # Fuel-based risk
-    if row["fuel_percent"] < 20:
-        risk += (20 - row["fuel_percent"]) * 0.02
-
-    # G-force risk (off-track, spins)
-    if row["g_lat"] > 2.0 or row["g_long"] > 1.8:
-        risk += 0.15
-
-    # Aggression risk
-    aggr = aggression_level(row)
-    if aggr > 80:
-        risk += 0.12
-    elif aggr > 65:
-        risk += 0.06
-
-    return float(np.clip(risk, 0.0, 1.0))
-
-
 # -------------------------------------------------
-# SIDEBAR NAV
+# SIDEBAR NAV + MANUAL SC CONTROL (C)
 # -------------------------------------------------
 st.sidebar.title("GR Strategist Lite")
 car = st.sidebar.selectbox("Car", ["GR86-035 Demo", "GR86-047 Demo"])
@@ -389,6 +437,14 @@ page = st.sidebar.radio(
     "View",
     ["Race HUD", "Strategy & Pit Window", "Telemetry & Driver", "Track & Weather", "Pit Loss Tool"],
 )
+
+st.sidebar.markdown("### Safety Car Controls (Demo)")
+if st.sidebar.button("Force SC (3 laps)"):
+    st.session_state.sc_active = True
+    st.session_state.sc_laps_remaining = 3
+if st.sidebar.button("Clear SC"):
+    st.session_state.sc_active = False
+    st.session_state.sc_laps_remaining = 0
 
 if st.sidebar.button("Reset stint"):
     st.session_state.clear()
@@ -408,7 +464,7 @@ current_tire = float(current_row["tire_remaining"])
 fuel_percent = float(current_row["fuel_percent"])
 fuel_laps_left = fuel_percent / FUEL_PERCENT_PER_LAP if FUEL_PERCENT_PER_LAP > 0 else 0.0
 current_lap_time = float(current_row["lap_time"])
-attack = aggression_level(current_row)
+attack_latest = aggression_level(current_row)
 
 future = predict_future(current_row)
 pit_start, pit_end = pick_pit_window(future)
@@ -465,6 +521,8 @@ if page == "Race HUD":
     # Safety car risk using viewed lap
     risk = safety_car_probability(view_row)
     st.markdown("### 🚨 Safety Car Risk Indicator")
+    if bool(view_row.get("is_sc_lap", False)):
+        st.error("🟡 SAFETY CAR LAP – field bunched, reduced wear & fuel.")
     if risk > 0.6:
         st.error(f"🟥 Critical | {risk*100:.1f}% — SC deployment likely, reduce curb load & aggression!")
     elif risk > 0.35:
@@ -536,67 +594,68 @@ if page == "Race HUD":
 
     def tire_html(label: str, temp: float, psi: float, health: float, color: str) -> str:
         tooltip = f"{label}: {temp:.1f}°C • {psi:.1f} psi • {health:.1f}% health"
+        # all HTML kept inside this string so nothing leaks
         return f"""
-        <div style='text-align:center;' title="{tooltip}">
-          <div style="
-              width:70px;height:70px;
-              border-radius:50%;
-              border:3px solid #111;
-              box-shadow:0 0 14px {color};
-              background:radial-gradient(circle at 30% 30%,
-                                         rgba(255,255,255,0.35),
-                                         {color});
-          "></div>
-          <div style="font-size:11px;margin-top:4px;color:#ddd;">{label}</div>
-          <div style="font-size:10px;color:#aaa;">{temp:.0f}°C • {psi:.1f} psi</div>
-        </div>
-        """
+<div style='text-align:center;' title="{tooltip}">
+  <div style="
+      width:70px;height:70px;
+      border-radius:50%;
+      border:3px solid #111;
+      box-shadow:0 0 14px {color};
+      background:radial-gradient(circle at 30% 30%,
+                                 rgba(255,255,255,0.35),
+                                 {color});
+  "></div>
+  <div style="font-size:11px;margin-top:4px;color:#ddd;">{label}</div>
+  <div style="font-size:10px;color:#aaa;">{temp:.0f}°C • {psi:.1f} psi</div>
+</div>
+"""
 
     car_body_html = """
-    <div style="
-        width:180px;height:90px;
-        border-radius:24px;
-        border:3px solid #111;
-        background:
-           linear-gradient(90deg,
-                #ffffff 0%,
-                #ffffff 40%,
-                #ff0000 40%,
-                #ff0000 72%,
-                #000000 72%,
-                #000000 100%);
-        box-shadow:0 0 20px #ff174455;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        color:#f5f5f5;
-        font-size:13px;
-        font-weight:600;
-    ">
-      GR86 — Top View
-    </div>
-    <div style="font-size:10px;color:#aaa;margin-top:2px;text-align:center;">
-      Toyota Gazoo Racing livery • front-biased aero & braking load
-    </div>
-    """
+<div style="
+    width:180px;height:90px;
+    border-radius:24px;
+    border:3px solid #111;
+    background:
+       linear-gradient(90deg,
+            #ffffff 0%,
+            #ffffff 40%,
+            #ff0000 40%,
+            #ff0000 72%,
+            #000000 72%,
+            #000000 100%);
+    box-shadow:0 0 20px #ff174455;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#f5f5f5;
+    font-size:13px;
+    font-weight:600;
+">
+  GR86 — Top View
+</div>
+<div style="font-size:10px;color:#aaa;margin-top:2px;text-align:center;">
+  Toyota Gazoo Racing livery • front-biased aero & braking load
+</div>
+"""
 
     heatmap_html = f"""
-    <div style="display:flex;flex-direction:column;align-items:center;gap:18px;margin-top:8px;">
-      <div style="font-size:13px;color:#bbb;">FRONT AXLE</div>
-      <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
-        {tire_html("FL", fl_temp, fl_psi, fl_health, fl_col)}
-        {car_body_html}
-        {tire_html("FR", fr_temp, fr_psi, fr_health, fr_col)}
-      </div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:18px;margin-top:8px;">
+  <div style="font-size:13px;color:#bbb;">FRONT AXLE</div>
+  <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
+    {tire_html("FL", fl_temp, fl_psi, fl_health, fl_col)}
+    {car_body_html}
+    {tire_html("FR", fr_temp, fr_psi, fr_health, fr_col)}
+  </div>
 
-      <div style="font-size:13px;color:#bbb;margin-top:10px;">REAR AXLE</div>
-      <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
-        {tire_html("RL", rl_temp, rl_psi, rl_health, rl_col)}
-        <div style="width:180px;"></div>
-        {tire_html("RR", rr_temp, rr_psi, rr_health, rr_col)}
-      </div>
-    </div>
-    """
+  <div style="font-size:13px;color:#bbb;margin-top:10px;">REAR AXLE</div>
+  <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
+    {tire_html("RL", rl_temp, rl_psi, rl_health, rl_col)}
+    <div style="width:180px;"></div>
+    {tire_html("RR", rr_temp, rr_psi, rr_health, rr_col)}
+  </div>
+</div>
+"""
 
     st.markdown(heatmap_html, unsafe_allow_html=True)
 
