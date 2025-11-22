@@ -649,12 +649,11 @@ if page == "Race HUD":
   </div>
 
   <div style="font-size:13px;color:#bbb;margin-top:10px;">REAR AXLE</div>
-  <div style="display:flex;gap:70px;align-items:center;justify-content:center;">
+  <div style="display:flex;gap:220px;align-items:center;justify-content:center;">
     {tire_html("RL", rl_temp, rl_psi, rl_health, rl_col)}
-    <div style="width:180px;"></div>
     {tire_html("RR", rr_temp, rr_psi, rr_health, rr_col)}
   </div>
-</div>
+ </div>
 """
 
     st.markdown(heatmap_html, unsafe_allow_html=True)
